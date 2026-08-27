@@ -92,12 +92,16 @@ power-saving rules, and start-at-login. Config lives in
 
 Ubuntu 26.04, GNOME 50 Wayland, RTX 5060 Ti, 4K monitor at 125 % scaling:
 
-| clip          | decoder | mpv CPU (one core) | RSS    | dropped |
-|---------------|---------|--------------------|--------|---------|
-| 1080p30 H.264 | vulkan  | 3.2 %              | 357 MB | 0       |
-| 2160p30 H.264 | vulkan  | 2.8 %              | 361 MB | 0       |
-| paused        | —       | 0.2 %              |        |         |
-| daemon        | —       | 0.0 %              | 16 MB  |         |
+| state                    | decoder | mpv CPU (one core) | RSS    | VRAM    | dropped |
+|--------------------------|---------|--------------------|--------|---------|---------|
+| 1080p30 H.264 playing    | vulkan  | 3.2 %              | 357 MB |         | 0       |
+| 2160p30 H.264 playing    | vulkan  | 2.8–3.2 %          | 368 MB | 287 MiB | 0       |
+| paused (user)            | —       | 0.2–0.3 %          | 368 MB | 287 MiB |         |
+| released (idle / locked) | —       | 0.3 %              | 358 MB | 219 MiB |         |
+| daemon                   | —       | 0.0 %              | 16 MB  |         |         |
+
+RSS is dominated by the Vulkan driver and libplacebo shader cache, not by
+video buffers; releasing the file frees the decoder's GPU frame pool.
 
 (The OpenGL backend with NVDEC measured 5.6 % / 456 MB; Vulkan is the default.)
 
@@ -129,6 +133,8 @@ minute, up to five times; `motionwall status` flags the software path.
   `gnome-extensions info motionwall@motionwall`.
 * **Overview / workspace switcher shows the static wallpaper** — expected;
   GNOME renders its own background in those views.
+* **Stutter from a network or removable drive** — the demuxer read-ahead is
+  kept tiny for local files; add `"mpv_args": ["--cache=yes"]` to the config.
 
 ## Development
 

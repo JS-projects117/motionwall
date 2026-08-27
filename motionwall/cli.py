@@ -45,6 +45,9 @@ def format_status(status: Optional[dict]) -> str:
     if status.get("error"):
         lines.append(f"Error:     {status['error']}")
     for p in status.get("players", []):
+        if p.get("unloaded"):
+            lines.append(f"Monitor:   {p['monitor']}  released (paused, decoder and GPU memory freed)")
+            continue
         hw = p.get("hwdec-current") or "software"
         fps = p.get("estimated-vf-fps")
         size = f"{p.get('video-params/w')}x{p.get('video-params/h')}" if p.get("video-params/w") else "?"

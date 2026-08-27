@@ -24,7 +24,8 @@ from .paths import cache_dir, runtime_dir
 log = logging.getLogger("motionwall.engine")
 
 MAX_RETRIES = 5
-HWDEC_RETRIES = 5          # re-attempt hardware decoding this many times if it fell back to software
+HWDEC_RETRIES = 5
+IPC_CONNECT_TIMEOUT_S = 3.0  # vulkan device creation alone can take ~1.3 s          # re-attempt hardware decoding this many times if it fell back to software
 STATS_CACHE_S = 1.0
 STABLE_RUN_S = 60.0        # a player alive this long gets its crash counter reset
 STATS_PROPERTIES = ("hwdec-current", "estimated-vf-fps", "container-fps", "frame-drop-count",
@@ -227,10 +228,11 @@ class Engine:
         p.ipc = MpvIpc(p.socket_path)
         p.started_at = time.monotonic()
         p.unloaded = False
-        if not p.ipc.connect():
+        if not p.ipc.connect(timeout=IPC_CONNECT_TIMEOUT_S):
             log.error("mpv IPC socket never appeared for %s; killing it so supervision can retry", p.name)
             self._kill(p)
             p.proc = None
+            p.next_restart = time.monotonic() + backoff_delay(p.attempts)   # respect backoff on the next check()
             return False
         if self.released:
             self._release(p)
@@ -272,7 +274,7 @@ class Engine:
                 continue
             if p.failed:
                 continue
-            if p.proc is not None and p.next_restart == 0.0:
+            if p.proc is not None and p.next_restart == 0.0:   # freshly dead: schedule with backoff
                 log.warning("mpv for %s exited with %s", p.name, p.proc.returncode)
                 p.next_restart = now + backoff_delay(p.attempts)
                 continue

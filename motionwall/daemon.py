@@ -107,9 +107,7 @@ class Daemon:
         path = os.path.abspath(os.path.expanduser(path))
         if not os.path.isfile(path):
             raise FileNotFoundError(f"no such file: {path}")
-        self.cfg.video = path
-        self.cfg.enabled = True
-        config.save(self.cfg)
+        self._save_config(video=path, enabled=True)
         self.state.user_play = True
         if self.engine.players and self.windows:
             self.engine.load(path)
@@ -131,22 +129,30 @@ class Daemon:
             self.state.user_play = True
             self._ensure_enabled()
         else:
-            self.state.user_play = not self.state.user_play
+            # "Play" always means play: under a policy pause (battery, fullscreen) do not add a user pause
+            self.state.user_play = not policy.decide(self.state, self.cfg)[0]
         self._apply_policy()
 
     def _ensure_enabled(self):
         """Resume after `stop`: the video is remembered, only the enabled flag was cleared."""
         if not self.cfg.enabled:
-            self.cfg.enabled = True
-            config.save(self.cfg)
+            self._save_config(enabled=True)
         if self.cfg.video and not self.windows:
             self._start_playback(self.cfg.video)
 
     def dbus_Stop(self):
         self._stop_playback()
-        self.cfg.enabled = False
-        config.save(self.cfg)
+        self._save_config(enabled=False)
         self._apply_policy()
+
+    def _save_config(self, **changes):
+        """Merge changes into the on-disk config (the GUI or the user may have edited it meanwhile)."""
+        fresh = config.load()
+        for key, value in changes.items():
+            setattr(fresh, key, value)
+        config.save(fresh)
+        self.cfg = fresh
+        self.engine.cfg = fresh
 
     def dbus_Quit(self):
         GLib.idle_add(self.loop.quit)
