@@ -225,7 +225,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.volume_row.set_value(cfg.volume)
         self.volume_row.connect("notify::value", lambda r, _: self._set_debounced("volume", int(r.get_value())))
         self.mute_row.bind_property("active", self.volume_row, "sensitive",
-                                    GObject_BindingFlags_INVERT_BOOLEAN())
+                                    GObject.BindingFlags.SYNC_CREATE | GObject.BindingFlags.INVERT_BOOLEAN)
         audio.add(self.volume_row)
         page.append(audio)
 
@@ -519,10 +519,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _toast(self, text: str):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
-
-
-def GObject_BindingFlags_INVERT_BOOLEAN():
-    return GObject.BindingFlags.SYNC_CREATE | GObject.BindingFlags.INVERT_BOOLEAN
 
 
 class MotionwallApp(Adw.Application):

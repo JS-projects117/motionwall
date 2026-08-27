@@ -7,9 +7,6 @@ from typing import List, Optional
 
 from . import __version__
 
-COMMANDS = ("gui", "daemon", "set", "pause", "resume", "toggle", "stop", "status", "quit-daemon")
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="motionwall", description="Animated video wallpaper for Ubuntu / GNOME")
     p.add_argument("--version", action="version", version=f"motionwall {__version__}")

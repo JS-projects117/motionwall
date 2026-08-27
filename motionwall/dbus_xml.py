@@ -1,6 +1,6 @@
-"""D-Bus introspection XML for the daemon and the shell extension."""
+"""D-Bus introspection XML for the daemon."""
 
-from . import DAEMON_INTERFACE, SHELL_INTERFACE
+from . import DAEMON_INTERFACE
 
 DAEMON_XML = f"""
 <node>
@@ -15,15 +15,6 @@ DAEMON_XML = f"""
     <method name="GetStatus"><arg type="s" name="json" direction="out"/></method>
     <signal name="StatusChanged"><arg type="s" name="state"/></signal>
     <property name="Version" type="s" access="read"/>
-  </interface>
-</node>
-"""
-
-SHELL_XML = f"""
-<node>
-  <interface name="{SHELL_INTERFACE}">
-    <property name="Occluded" type="b" access="read"/>
-    <signal name="OccludedChanged"><arg type="b" name="occluded"/></signal>
   </interface>
 </node>
 """

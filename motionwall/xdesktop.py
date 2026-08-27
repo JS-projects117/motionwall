@@ -222,12 +222,6 @@ class DesktopLayer:
         self.display.close()
 
 
-def stacking_order(layer: DesktopLayer) -> List[int]:
-    """Bottom-to-top list of managed X windows as reported by the WM (for tests)."""
-    prop = layer.root.get_full_property(layer.atom("_NET_CLIENT_LIST_STACKING"), Xatom.WINDOW)
-    return list(prop.value) if prop else []
-
-
 if __name__ == "__main__":  # manual check: python3 -m motionwall.xdesktop [seconds]
     import select
     import sys

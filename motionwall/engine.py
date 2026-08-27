@@ -330,9 +330,6 @@ class Engine:
                 self._safe(p, "set_property", "pause", False)
         self._stats_cache = None
 
-    def set_paused(self, paused: bool) -> None:
-        self.set_playback("pause" if paused else "play")
-
     def _release(self, p: Player) -> None:
         if not p.unloaded:
             self._safe(p, "stop")

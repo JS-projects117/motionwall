@@ -11,18 +11,7 @@ EXT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
 gnome-extensions enable "$UUID" >/dev/null 2>&1 || true
 # also record it in the enabled list so it starts on the next login even if the
 # running shell has not indexed it yet
-python3 - "$UUID" <<'PY'
-import subprocess, sys, ast
-uuid = sys.argv[1]
-out = subprocess.run(["gsettings", "get", "org.gnome.shell", "enabled-extensions"], capture_output=True, text=True).stdout.strip()
-try:
-    current = list(ast.literal_eval(out.replace("@as ", ""))) if out and out != "@as []" else []
-except (ValueError, SyntaxError):
-    current = []
-if uuid not in current:
-    current.append(uuid)
-    subprocess.run(["gsettings", "set", "org.gnome.shell", "enabled-extensions", str(current)], check=False)
-PY
+python3 "$HERE/scripts/enabled-extensions.py" add "$UUID"
 state="$( (gnome-extensions info "$UUID" 2>/dev/null || true) | sed -n 's/^ *State: //p')"
 echo "extension $UUID installed in $EXT_DIR (state: ${state:-not loaded yet})"
 case "$state" in
