@@ -13,6 +13,13 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             cli.parse_args(["set"])
 
+    def test_bare_file_argument_opens_gui(self):
+        args = cli.parse_args(["/home/me/clip.mp4"])
+        self.assertEqual((args.command, args.files), ("gui", ["/home/me/clip.mp4"]))
+        args = cli.parse_args(["gui", "/a.mp4", "/b.mp4"])
+        self.assertEqual(args.files, ["/a.mp4", "/b.mp4"])
+        self.assertEqual(cli.parse_args(["gui"]).files, [])
+
     def test_all_commands_parse(self):
         for cmd in ("daemon", "pause", "resume", "toggle", "stop", "status", "quit-daemon", "gui"):
             self.assertEqual(cli.parse_args([cmd]).command, cmd)

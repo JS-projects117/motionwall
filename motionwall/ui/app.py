@@ -567,6 +567,6 @@ class MotionwallApp(Adw.Application):
             self.window._daemon_call("ReloadConfig")
 
 
-def main() -> int:
+def main(files: Optional[List[str]] = None) -> int:
     app = MotionwallApp()
-    return app.run(sys.argv[:1])
+    return app.run(sys.argv[:1] + [os.path.abspath(f) for f in (files or [])])

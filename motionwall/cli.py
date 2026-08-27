@@ -11,7 +11,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="motionwall", description="Animated video wallpaper for Ubuntu / GNOME")
     p.add_argument("--version", action="version", version=f"motionwall {__version__}")
     sub = p.add_subparsers(dest="command")
-    sub.add_parser("gui", help="open the settings window (default)")
+    g = sub.add_parser("gui", help="open the settings window (default)")
+    g.add_argument("files", nargs="*", metavar="VIDEO", help="video file(s) to add and use")
     sub.add_parser("daemon", help="run the wallpaper service in the foreground")
     s = sub.add_parser("set", help="use a video file as wallpaper")
     s.add_argument("file")
@@ -26,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `motionwall FILE.mp4` (e.g. "Open with Motionwall" from the file manager) == `motionwall gui FILE.mp4`
+    if argv and argv[0] not in ("gui", "daemon", "set", "pause", "resume", "toggle", "stop", "status", "quit-daemon") \
+            and not argv[0].startswith("-"):
+        argv.insert(0, "gui")
     args = build_parser().parse_args(argv)
     if not args.command:
         args.command = "gui"
@@ -67,7 +73,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return daemon_main()
     if args.command == "gui":
         from .ui.app import main as gui_main
-        return gui_main()
+        return gui_main(getattr(args, "files", []) or [])
 
     from gi.repository import GLib
     from .client import DaemonClient
