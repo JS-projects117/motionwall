@@ -4,7 +4,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UUID=motionwall@motionwall
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-( cd "$HERE/extension" && zip -q -r "$TMP/$UUID.zip" metadata.json extension.js )
+( cd "$HERE/extension" && zip -q -r "$TMP/$UUID.zip" metadata.json *.js )
 gnome-extensions install --force "$TMP/$UUID.zip"
 EXT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
 [ -f "$EXT_DIR/extension.js" ] || { echo "extension files not found in $EXT_DIR"; exit 1; }
