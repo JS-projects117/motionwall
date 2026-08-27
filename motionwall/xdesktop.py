@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 from Xlib import X, Xatom, Xutil, display, error
-from Xlib.ext import randr
+from Xlib.ext import randr, shape
 
 log = logging.getLogger("motionwall.xdesktop")
 
@@ -61,6 +61,7 @@ class DesktopLayer:
         self._pending_screen_change = False
         self._atoms: Dict[str, int] = {}
         self._has_randr = self.display.has_extension("RANDR")
+        self._has_shape = self.display.has_extension("SHAPE")
         self._select_root_events()
 
     # -- atoms -------------------------------------------------------------
@@ -132,6 +133,13 @@ class DesktopLayer:
         # no decorations even if a WM ignores the window type
         win.change_property(atom("_MOTIF_WM_HINTS"), atom("_MOTIF_WM_HINTS"), 32, [2, 0, 0, 0, 0])
         win.change_property(atom("WM_PROTOCOLS"), Xatom.ATOM, 32, [atom("WM_DELETE_WINDOW")])
+        # Empty input shape: the pointer passes straight through, so the wallpaper
+        # is not clickable and never steals events from windows above or the desktop.
+        if self._has_shape:
+            try:
+                win.shape_rectangles(shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+            except (error.XError, TypeError) as exc:
+                log.debug("could not set empty input shape: %s", exc)
         win.map()
         return win.id
 
