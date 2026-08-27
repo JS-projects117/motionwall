@@ -1,0 +1,8 @@
+{
+  "uuid": "motionwall@motionwall",
+  "name": "Motionwall",
+  "description": "Tells the Motionwall wallpaper daemon when a full-screen or maximized window covers every monitor, so the video can pause and save power.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/",
+  "version": 1
+}

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Motionwall
+GenericName=Animated Wallpaper
+Comment=Use a video as your desktop wallpaper
+Exec=@LAUNCHER@ gui %F
+Icon=org.motionwall.Motionwall
+Terminal=false
+Categories=Settings;DesktopSettings;GNOME;GTK;
+Keywords=wallpaper;video;animated;live;background;
+MimeType=video/mp4;video/x-matroska;video/webm;video/quicktime;
+StartupNotify=true
+DBusActivatable=false
