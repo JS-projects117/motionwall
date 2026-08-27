@@ -13,7 +13,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from .. import APP_ID, __version__, autostart, config, library  # noqa: E402
-from ..client import DaemonClient  # noqa: E402
+from .. import control  # noqa: E402
 from ..config import HWDEC_MODES, SCALING_MODES  # noqa: E402
 
 REFRESH_MS = 2000
@@ -33,32 +33,6 @@ CSS = """
 .library-item.active { background: alpha(@accent_bg_color, 0.18); }
 .stat { font-family: monospace; font-size: 0.9em; }
 """
-
-
-class CpuMeter:
-    """CPU % of a set of pids between two samples (of one core)."""
-
-    def __init__(self):
-        self._last: Dict[int, tuple] = {}
-        self._hz = os.sysconf("SC_CLK_TCK")
-
-    def sample(self, pids: List[int]) -> Optional[float]:
-        now = time.monotonic()
-        total = 0.0
-        seen = False
-        for pid in pids:
-            try:
-                with open(f"/proc/{pid}/stat") as fh:
-                    fields = fh.read().split(")")[-1].split()
-                ticks = int(fields[11]) + int(fields[12])
-            except (OSError, ValueError, IndexError):
-                continue
-            prev = self._last.get(pid)
-            self._last[pid] = (ticks, now)
-            if prev and now > prev[1]:
-                total += 100.0 * (ticks - prev[0]) / self._hz / (now - prev[1])
-                seen = True
-        return total if seen else None
 
 
 class LibraryItem(Gtk.Box):
@@ -98,9 +72,7 @@ class LibraryItem(Gtk.Box):
 class MainWindow(Adw.ApplicationWindow):
     def __init__(self, app: "MotionwallApp"):
         super().__init__(application=app, title="Motionwall", default_width=920, default_height=760)
-        self.client = app.client
         self.cfg = config.load()
-        self.cpu = CpuMeter()
         self._status: Optional[dict] = None
         self._items: Dict[str, LibraryItem] = {}
         self._updating = False
@@ -110,7 +82,6 @@ class MainWindow(Adw.ApplicationWindow):
         library.prune_thumbnails()
         self._refresh()
         GLib.timeout_add(REFRESH_MS, self._refresh)
-        self.client.subscribe(lambda state: self._refresh())
 
     # -- layout ---------------------------------------------------------------
     def _build(self):
@@ -122,8 +93,8 @@ class MainWindow(Adw.ApplicationWindow):
         add.connect("clicked", self._on_add_clicked)
         header.pack_start(add)
         menu = Gio.Menu()
-        menu.append("Reload Daemon Config", "app.reload")
-        menu.append("Quit Wallpaper Daemon", "app.quit-daemon")
+        menu.append("Reload Wallpaper", "app.reload")
+        menu.append("Stop X11 Daemon (Xorg only)", "app.quit-daemon")
         menu.append("About Motionwall", "app.about")
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu))
         view.add_top_bar(header)
@@ -165,10 +136,10 @@ class MainWindow(Adw.ApplicationWindow):
         info.append(self.np_stats)
         buttons = Gtk.Box(spacing=8, margin_top=8)
         self.play_button = Gtk.Button(child=Adw.ButtonContent(icon_name="media-playback-pause-symbolic", label="Pause"))
-        self.play_button.connect("clicked", lambda *_: self._daemon_call("Toggle"))
+        self.play_button.connect("clicked", lambda *_: self._on_play_pause())
         self.stop_button = Gtk.Button(child=Adw.ButtonContent(icon_name="media-playback-stop-symbolic", label="Stop"))
         self.stop_button.add_css_class("destructive-action")
-        self.stop_button.connect("clicked", lambda *_: self._daemon_call("Stop"))
+        self.stop_button.connect("clicked", lambda *_: self._control(enabled=False))
         buttons.append(self.play_button)
         buttons.append(self.stop_button)
         info.append(buttons)
@@ -202,11 +173,6 @@ class MainWindow(Adw.ApplicationWindow):
         display = Adw.PreferencesGroup(title="Display")
         self.scaling_row = self._combo(display, "Scaling", "How the video is fitted to the screen",
                                        SCALING_MODES, SCALING_LABELS, cfg.scaling, "scaling")
-        self.monitor_row = Adw.ComboRow(title="Monitors", subtitle="Where to show the wallpaper")
-        self.monitor_row.set_model(Gtk.StringList.new(["All monitors"]))
-        self._monitor_names: List[str] = ["all"]
-        self.monitor_row.connect("notify::selected", self._on_monitor_changed)
-        display.add(self.monitor_row)
         self.speed_row = Adw.SpinRow.new_with_range(0.25, 4.0, 0.25)
         self.speed_row.set_title("Playback speed")
         self.speed_row.set_digits(2)
@@ -294,8 +260,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             setattr(self.cfg, key, value)
         config.save(self.cfg)
-        if self.client.is_running():
-            self._daemon_call("ReloadConfig", autostart=False, refresh=False)
+        control.notify()
 
     def _set_debounced(self, key: str, value, extra: bool = False):
         if self._updating:
@@ -308,11 +273,6 @@ class MainWindow(Adw.ApplicationWindow):
             self._set(key, value, extra)
             return False
         self._pending[key] = GLib.timeout_add(SETTING_DEBOUNCE_MS, flush)
-
-    def _on_monitor_changed(self, row, _):
-        idx = row.get_selected()
-        if 0 <= idx < len(self._monitor_names):
-            self._set("monitors", self._monitor_names[idx])
 
     def _on_autostart(self, row, _):
         if self._updating:
@@ -355,7 +315,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._toast(f"File not found: {video}")
             return
         library.add(video)
-        self._daemon_call("SetWallpaper", video)
+        self._control(video=video, enabled=True, paused=False)
 
     def _remove_video(self, video: str):
         library.remove(video)
@@ -406,85 +366,72 @@ class MainWindow(Adw.ApplicationWindow):
         self._add_videos([f.get_path() for f in value.get_files() if f.get_path()])
         return True
 
-    # -- daemon ----------------------------------------------------------------------
-    def _daemon_call(self, method: str, *args, autostart: bool = True, refresh: bool = True):
-        try:
-            self.client.call(method, *args, autostart=autostart)
-        except (GLib.Error, RuntimeError) as exc:
-            self._toast(getattr(exc, "message", str(exc)))
-        if refresh:
-            self._refresh()
+    # -- control (config-driven; extension on Wayland, daemon on Xorg) -----------------
+    def _control(self, **changes):
+        self.cfg = control.apply_state(**changes)
+        self._refresh()
+
+    def _on_play_pause(self):
+        st = self._status or {}
+        if st.get("state") == "playing":
+            self._control(paused=True)
+        else:
+            self._control(paused=False, enabled=True)
 
     def _refresh(self):
         try:
-            status = self.client.status()
+            status = control.status()
         except (GLib.Error, RuntimeError) as exc:
-            status = {"state": "error", "error": getattr(exc, "message", str(exc)), "video": self.cfg.video,
-                      "players": [], "monitors": []}
+            status = {"state": "unknown", "video": self.cfg.video, "scaling": self.cfg.scaling,
+                      "backend": "none", "occluded": None, "enabled": self.cfg.enabled,
+                      "paused": self.cfg.paused, "extension_present": False}
         self._apply_status(status)
         return True
 
-    def _apply_status(self, status: Optional[dict]):
+    def _apply_status(self, status: dict):
         previous_video = self._status.get("video") if self._status else None
         self._status = status
-        if status is None:
-            video = self.cfg.video
-            self.np_title.set_label(os.path.basename(video) if video else "No wallpaper set")
-            self.np_state.set_label("Daemon not running - it starts automatically when you pick a video")
-            self.np_stats.set_label("")
-            self.play_button.set_sensitive(False)
-            self.stop_button.set_sensitive(bool(video))
-            self._mark_active(video)
-            if video != previous_video:
-                self._set_np_picture(str(library.thumb_path(video)) if video else None)
-            return
         video = status.get("video") or ""
         state = status.get("state", "stopped")
+        backend = status.get("backend", "none")
         self.np_title.set_label(os.path.basename(video) if video else "No wallpaper set")
-        if state == "playing":
-            text = "Playing"
-        elif state == "paused":
-            text = f"Paused - {status.get('pause_reason_label') or 'paused'}"
-        elif state == "error":
-            text = f"Error: {status.get('error') or 'mpv failed, see ~/.cache/motionwall/'}"
-        elif video and not status.get("enabled", True):
-            text = "Stopped - press Play to bring it back, or choose another video"
-        else:
-            text = "Stopped - choose a video from the library"
+        messages = {
+            "playing": "Playing",
+            "starting": "Starting…",
+            "paused": "Paused by you",
+            "stopped": "Stopped - press Play to bring it back" if video else "Choose a video to begin",
+            "waiting": "Ready - log out and back in to load the wallpaper extension",
+            "idle": "Choose a video to begin",
+            "unknown": "Renderer not detected",
+        }
+        text = messages.get(state, state)
+        if status.get("occluded"):
+            text = "Paused - a full-screen window is covering the desktop"
+        if backend == "none" and video:
+            text = "Saved - enable the Motionwall extension (log out and back in) to see it"
         self.np_state.set_label(text)
-        self.play_button.set_sensitive(state in ("playing", "paused") or (state == "stopped" and bool(video)))
-        self.stop_button.set_sensitive(state in ("playing", "paused"))
+        self.play_button.set_sensitive(bool(video))
+        self.stop_button.set_sensitive(state in ("playing", "paused", "starting"))
         content = self.play_button.get_child()
-        if state != "playing":
-            content.set_icon_name("media-playback-start-symbolic")
-            content.set_label("Play")
-        else:
+        if state == "playing":
             content.set_icon_name("media-playback-pause-symbolic")
             content.set_label("Pause")
-        self.np_stats.set_label(self._stats_text(status))
+        else:
+            content.set_icon_name("media-playback-start-symbolic")
+            content.set_label("Play")
+        self.np_stats.set_label(self._backend_text(status))
         self._mark_active(video)
         if video != previous_video:
             self._set_np_picture(str(library.thumb_path(video)) if video else None)
-        self._update_monitors(status)
-        self.fullscreen_row.set_subtitle("Extension active" if status.get("extension_present")
-                                         else "Needs the Motionwall GNOME Shell extension (install.sh --extension)")
+        self.fullscreen_row.set_subtitle("Extension active - full-screen apps pause the wallpaper"
+                                         if status.get("extension_present")
+                                         else "Needs the Motionwall GNOME Shell extension (log out/in after install)")
 
-    def _stats_text(self, status: dict) -> str:
-        parts = []
-        pids = [p["pid"] for p in status.get("players", []) if p.get("pid")]
-        for p in status.get("players", []):
-            if p.get("unloaded"):
-                parts.append(f"{p['monitor']}: released (decoder and GPU memory freed while paused)")
-                continue
-            hw = p.get("hwdec-current") or ("software" if p.get("alive") else "starting")
-            fps = p.get("estimated-vf-fps")
-            size = f"{p.get('video-params/w')}x{p.get('video-params/h')}" if p.get("video-params/w") else ""
-            parts.append(f"{p['monitor']}: {hw} decode  {size}  {fps:.1f} fps  dropped {p.get('frame-drop-count') or 0}"
-                         if isinstance(fps, (int, float)) else f"{p['monitor']}: {hw}")
-        cpu = self.cpu.sample(pids) if pids else None
-        if cpu is not None:
-            parts.append(f"CPU {cpu:.1f}% of one core")
-        return "\n".join(parts)
+    def _backend_text(self, status: dict) -> str:
+        labels = {"extension": "Rendered by the GNOME Shell extension (behind all windows)",
+                  "daemon": "Rendered by the X11 daemon (Xorg session)",
+                  "none": "No renderer active - enable the extension and log back in"}
+        return labels.get(status.get("backend"), "")
 
     def _set_np_picture(self, path: Optional[str]):
         if path and os.path.exists(path):
@@ -499,24 +446,6 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 item.remove_css_class("active")
 
-    def _update_monitors(self, status: dict):
-        names = ["all"] + [m["name"] for m in status.get("monitors", []) if m.get("name")]
-        if names == self._monitor_names:
-            return
-        self._monitor_names = names
-        self._updating = True
-        try:
-            self.monitor_row.set_model(Gtk.StringList.new(["All monitors"] + names[1:]))
-            if self.cfg.monitors in names:
-                self.monitor_row.set_selected(names.index(self.cfg.monitors))
-            else:
-                self.monitor_row.set_selected(0)
-                if self.cfg.monitors != "all":      # configured output is gone: persist the fallback
-                    self._updating = False
-                    self._set("monitors", "all")
-        finally:
-            self._updating = False
-
     def _toast(self, text: str):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
 
@@ -524,7 +453,6 @@ class MainWindow(Adw.ApplicationWindow):
 class MotionwallApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
-        self.client = DaemonClient()
         self.window: Optional[MainWindow] = None
         for name, cb in (("about", self._about), ("quit-daemon", self._quit_daemon), ("reload", self._reload)):
             action = Gio.SimpleAction.new(name, None)
@@ -557,14 +485,17 @@ class MotionwallApp(Adw.Application):
         about.present(self.window)
 
     def _quit_daemon(self, *_):
-        if self.client.is_running():
-            self.client.call("Quit", autostart=False)
+        from ..client import DaemonClient
+        client = DaemonClient()
+        if client.is_running():
+            client.call("Quit", autostart=False)
         if self.window:
             GLib.timeout_add(500, self.window._refresh)
 
     def _reload(self, *_):
+        control.notify()
         if self.window:
-            self.window._daemon_call("ReloadConfig")
+            GLib.timeout_add(300, self.window._refresh)
 
 
 def main() -> int:

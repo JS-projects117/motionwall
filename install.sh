@@ -72,13 +72,19 @@ if [ "$WANT_EXT" = 1 ]; then
   fi
 fi
 
-# ---- restart a running daemon so it picks up the new code -----------------------------
-if gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+# ---- renderer handoff ---------------------------------------------------------------
+# On Wayland the GNOME Shell extension is the renderer; make sure the old X11 daemon
+# (which cannot layer correctly under Wayland) is not left running or autostarted.
+if [ "$WANT_EXT" = 1 ] || [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
+  "$LAUNCHER" quit-daemon >/dev/null 2>&1 || true
+  rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/motionwall-daemon.desktop"
+  log "using the GNOME Shell extension as the renderer (log out and back in to load it)"
+elif gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
      --method org.freedesktop.DBus.NameHasOwner org.motionwall.Daemon 2>/dev/null | grep -q true; then
-  log "restarting the running daemon"
+  log "restarting the running X11 daemon"
   "$LAUNCHER" quit-daemon >/dev/null 2>&1 || true
   sleep 1
-  "$LAUNCHER" resume >/dev/null 2>&1 || true      # `resume` activates the daemon (status does not)
+  "$LAUNCHER" resume >/dev/null 2>&1 || true
 fi
 
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH; log out and back in, or run $LAUNCHER";; esac

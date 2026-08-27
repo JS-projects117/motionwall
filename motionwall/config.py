@@ -17,6 +17,7 @@ HWDEC_MODES = ("auto-safe", "auto", "nvdec", "vaapi", "vulkan", "no")
 class Config:
     video: str = ""                       # path of the active wallpaper video ("" = none)
     enabled: bool = True                  # False after `motionwall stop`; the video is remembered
+    paused: bool = False                  # user pause (extension/daemon read this)
     scaling: str = "fill"                 # fill | fit | stretch
     mute: bool = True                     # no audio decoding at all when muted
     volume: int = 50                      # 0-100, only used when not muted

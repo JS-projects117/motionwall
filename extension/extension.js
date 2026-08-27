@@ -1,140 +1,513 @@
-// Motionwall GNOME Shell extension: exports org.motionwall.Shell on the session
-// bus with an `Occluded` property that is true when every monitor is covered by
-// a full-screen or maximized window (the wallpaper daemon pauses playback then).
+// Motionwall - animated video wallpaper rendered inside GNOME Shell.
+//
+// Strategy (adapted from the DING and Hanabi extensions):
+//   * one hidden mpv window per monitor renders the video on Xwayland;
+//   * each monitor's Meta.BackgroundActor gets a Clutter.Clone of its mpv
+//     window, so the live video appears in the real background layer - behind
+//     every window, non-interactive, and visible through the overview;
+//   * the source mpv windows are hidden from the window list, overview, tab
+//     list and app tracker, and their actors are hidden (a hidden actor is
+//     non-reactive, so clicks never reach the video) while the clone keeps
+//     painting the live texture.
 
-import Gio from 'gi://Gio';
+import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
+import Gio from 'gi://Gio';
 import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
+import St from 'gi://St';
 
-import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Background from 'resource:///org/gnome/shell/ui/background.js';
+import * as Workspace from 'resource:///org/gnome/shell/ui/workspace.js';
+import * as WorkspaceThumbnail from 'resource:///org/gnome/shell/ui/workspaceThumbnail.js';
 
-const OBJECT_PATH = '/org/motionwall/Shell';
+import {
+    WINDOW_MARKER, CONFIG_PATH, SHELL_OBJECT_PATH, SHELL_INTERFACE,
+    RENDERER_POLL_MS, DEBOUNCE_MS,
+} from './constants.js';
+import {readConfig, findMpv, MpvPlayer} from './player.js';
+
 const IFACE_XML = `
 <node>
-  <interface name="org.motionwall.Shell">
+  <interface name="${SHELL_INTERFACE}">
     <property name="Occluded" type="b" access="read"/>
+    <property name="Playing" type="b" access="read"/>
     <signal name="OccludedChanged"><arg type="b" name="occluded"/></signal>
+    <method name="Reload"/>
   </interface>
 </node>`;
 
-const OUR_WM_CLASS = 'motionwall';
-const DEBOUNCE_MS = 150;
+function isMarkerWindow(win) {
+    return !!win?.title?.includes(WINDOW_MARKER);
+}
 
+function markerIndex(win) {
+    const m = win?.title?.match(/@motionwall-wallpaper:(\d+)/);
+    return m ? parseInt(m[1], 10) : -1;
+}
+
+// -----------------------------------------------------------------------------
+// LiveWallpaper: a widget dropped inside a Meta.BackgroundActor that shows a
+// Clone of the mpv window for that monitor.
+// -----------------------------------------------------------------------------
+const LiveWallpaper = GObject.registerClass(
+class LiveWallpaper extends St.Widget {
+    _init(backgroundActor, getAllWindowActors) {
+        super._init({
+            layout_manager: new Clutter.BinLayout(),
+            width: backgroundActor.width,
+            height: backgroundActor.height,
+            opacity: 0,
+        });
+        this._backgroundActor = backgroundActor;
+        this._monitorIndex = backgroundActor.monitor;
+        this._getAllWindowActors = getAllWindowActors;
+        this._clone = null;
+        this._pollId = 0;
+        this._sourceDestroyId = 0;
+
+        backgroundActor.layout_manager = new Clutter.BinLayout();
+        backgroundActor.add_child(this);
+
+        this.connect('destroy', () => this._onDestroy());
+        this._apply();
+    }
+
+    _onDestroy() {
+        if (this._pollId) {
+            GLib.source_remove(this._pollId);
+            this._pollId = 0;
+        }
+        this._dropClone();
+    }
+
+    _dropClone() {
+        if (this._clone) {
+            if (this._sourceDestroyId && this._clone.source) {
+                this._clone.source.disconnect(this._sourceDestroyId);
+                this._sourceDestroyId = 0;
+            }
+            this._clone.destroy();
+            this._clone = null;
+        }
+    }
+
+    _findRenderer() {
+        const actors = this._getAllWindowActors().filter(a => isMarkerWindow(a.meta_window));
+        // Prefer an exact index match; fall back to monitor geometry.
+        let actor = actors.find(a => markerIndex(a.meta_window) === this._monitorIndex);
+        if (!actor)
+            actor = actors.find(a => a.meta_window?.get_monitor() === this._monitorIndex);
+        return actor ?? null;
+    }
+
+    _apply() {
+        const attach = () => {
+            const renderer = this._findRenderer();
+            if (!renderer)
+                return true;      // keep polling
+            this._dropClone();
+            this._clone = new Clutter.Clone({
+                source: renderer,
+                x_expand: true,
+                y_expand: true,
+            });
+            this.add_child(this._clone);
+            this._sourceDestroyId = renderer.connect('destroy', () => {
+                this._dropClone();
+                if (!this._pollId)
+                    this._apply();
+            });
+            this.ease({opacity: 255, duration: 500, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+            this._pollId = 0;
+            return false;
+        };
+        if (attach())
+            this._pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, RENDERER_POLL_MS, attach);
+    }
+});
+
+// -----------------------------------------------------------------------------
+// Extension
+// -----------------------------------------------------------------------------
 export default class MotionwallExtension extends Extension {
     enable() {
+        this._injections = new InjectionManager();
+        this._getAllWindowActors = () => global.get_window_actors();
+        this._wallpapers = new Set();
+        this._players = [];
+        this._signals = [];
         this._occluded = false;
-        this._connections = [];
-        this._windowConnections = new Map();
-        this._timeout = 0;
+        this._playing = false;
+        this._config = readConfig();
+        this._mpv = findMpv();
+        this._configMonitor = null;
+        this._debounceId = 0;
+        this._idleWatchId = 0;
+        this._activeWatchId = 0;
 
-        this._dbus = Gio.DBusExportedObject.wrapJSObject(IFACE_XML, this);
-        this._dbus.export(Gio.DBus.session, OBJECT_PATH);
+        this._mpvMissing = !this._mpv;
+        if (this._mpvMissing)
+            this.getLogger?.().warn?.('mpv not found; wallpaper cannot render');
 
-        const display = global.display;
-        const wm = global.window_manager;
-        const wsm = global.workspace_manager;
-        this._connect(display, 'window-created', (_d, win) => { this._track(win); this._schedule(); });
-        this._connect(display, 'notify::focus-window', () => this._schedule());
-        this._connect(display, 'in-fullscreen-changed', () => this._schedule());
-        for (const sig of ['minimize', 'unminimize', 'size-change', 'destroy', 'map', 'switch-workspace'])
-            this._connect(wm, sig, () => this._schedule());
-        this._connect(wsm, 'active-workspace-changed', () => this._schedule());
-        this._connect(Main.layoutManager, 'monitors-changed', () => this._schedule());
-        this._connect(Main.overview, 'showing', () => this._schedule());
-        this._connect(Main.overview, 'hidden', () => this._schedule());
+        this._exportDbus();
+        this._installOverrides();
+        this._installWindowHiding();
+        this._connectSignals();
+        this._watchConfig();
 
-        for (const actor of global.get_window_actors())
-            this._track(actor.get_meta_window());
-        this._schedule();
-    }
-
-    disable() {
-        if (this._timeout) {
-            GLib.source_remove(this._timeout);
-            this._timeout = 0;
-        }
-        for (const [obj, id] of this._connections)
-            obj.disconnect(id);
-        this._connections = [];
-        for (const [win, ids] of this._windowConnections)
-            for (const id of ids)
-                win.disconnect(id);
-        this._windowConnections.clear();
-        if (this._dbus) {
-            this._dbus.unexport();
-            this._dbus = null;
-        }
-    }
-
-    // D-Bus property
-    get Occluded() {
-        return this._occluded;
-    }
-
-    _connect(obj, signal, handler) {
-        this._connections.push([obj, obj.connect(signal, handler)]);
-    }
-
-    _track(win) {
-        if (!win || this._windowConnections.has(win))
-            return;
-        const ids = [];
-        for (const prop of ['notify::fullscreen', 'notify::maximized-horizontally',
-            'notify::maximized-vertically', 'notify::minimized'])
-            ids.push(win.connect(prop, () => this._schedule()));
-        ids.push(win.connect('unmanaged', () => {
-            for (const id of this._windowConnections.get(win) ?? [])
-                win.disconnect(id);
-            this._windowConnections.delete(win);
-            this._schedule();
-        }));
-        this._windowConnections.set(win, ids);
-    }
-
-    _schedule() {
-        if (this._timeout)
-            return;
-        this._timeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DEBOUNCE_MS, () => {
-            this._timeout = 0;
-            this._update();
+        // Wait for the shell to settle, then start.
+        this._startId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
+            this._startId = 0;
+            this._reloadBackgrounds();
+            this._restartPlayers();
             return GLib.SOURCE_REMOVE;
         });
     }
 
-    _isCovering(win) {
-        if (win.minimized || win.get_window_type() !== Meta.WindowType.NORMAL)
-            return false;
-        const cls = (win.get_wm_class() ?? '').toLowerCase();
-        const inst = (win.get_wm_class_instance() ?? '').toLowerCase();
-        if (cls === OUR_WM_CLASS || inst === OUR_WM_CLASS)
-            return false;
-        return win.is_fullscreen() || (win.maximized_horizontally && win.maximized_vertically);
+    disable() {
+        if (this._startId) {
+            GLib.source_remove(this._startId);
+            this._startId = 0;
+        }
+        if (this._debounceId) {
+            GLib.source_remove(this._debounceId);
+            this._debounceId = 0;
+        }
+        this._removeIdleWatches();
+        if (this._configMonitor) {
+            this._configMonitor.cancel();
+            this._configMonitor = null;
+        }
+        for (const [obj, id] of this._signals)
+            obj.disconnect(id);
+        this._signals = [];
+
+        this._stopPlayers();
+
+        this._injections.clear();
+        this._destroyWallpapers();
+
+        if (this._dbus) {
+            this._dbus.unexport();
+            this._dbus = null;
+        }
+        this._reloadBackgrounds();
+    }
+
+    log(msg) {
+        try {
+            this.getLogger().debug(msg);
+        } catch {
+            console.log(`[motionwall] ${msg}`);
+        }
+    }
+
+    // -- D-Bus -------------------------------------------------------------
+    _exportDbus() {
+        this._dbus = Gio.DBusExportedObject.wrapJSObject(IFACE_XML, this);
+        try {
+            this._dbus.export(Gio.DBus.session, SHELL_OBJECT_PATH);
+        } catch (e) {
+            logError(e, 'motionwall: cannot export D-Bus');
+        }
+    }
+
+    get Occluded() {
+        return this._occluded;
+    }
+
+    get Playing() {
+        return this._playing;
+    }
+
+    Reload() {
+        this._config = readConfig();
+        this._restartPlayers();
+    }
+
+    // -- players -----------------------------------------------------------
+    _restartPlayers() {
+        this._stopPlayers();
+        if (this._mpvMissing || !this._config.video || !this._config.enabled) {
+            this._playing = false;
+            this._reloadBackgrounds();
+            return;
+        }
+        const monitors = Main.layoutManager.monitors;
+        this._players = monitors.map((mon, i) => {
+            const player = new MpvPlayer(i, {x: mon.x, y: mon.y, width: mon.width, height: mon.height},
+                this._mpv, m => this.log(m));
+            player.start(this._config);
+            return player;
+        });
+        this._playing = true;
+        this._reloadBackgrounds();
+        this._updatePolicy();
+    }
+
+    _stopPlayers() {
+        for (const p of this._players)
+            p.stop();
+        this._players = [];
+        this._playing = false;
+    }
+
+    _setPaused(paused) {
+        for (const p of this._players)
+            p.setPaused(paused);
+    }
+
+    // -- background injection ----------------------------------------------
+    _installOverrides() {
+        const self = this;
+        this._injections.overrideMethod(
+            Background.BackgroundManager.prototype, '_createBackgroundActor',
+            original => function () {
+                const actor = original.call(this);
+                try {
+                    const wallpaper = new LiveWallpaper(actor, self._getAllWindowActors);
+                    self._wallpapers.add(wallpaper);
+                    this.wallpaperActor = wallpaper;
+                    wallpaper.connect('destroy', a => self._wallpapers.delete(a));
+                } catch (e) {
+                    logError(e, 'motionwall: failed to inject wallpaper');
+                }
+                return actor;
+            });
+    }
+
+    _reloadBackgrounds() {
+        this._destroyWallpapers();
+        global.compositor.get_laters().add(Meta.LaterType.BEFORE_REDRAW, () => {
+            try {
+                Main.layoutManager._updateBackgrounds();
+            } catch (e) {
+                logError(e, 'motionwall: updateBackgrounds failed');
+            }
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _destroyWallpapers() {
+        for (const w of [...this._wallpapers])
+            w.destroy();
+        this._wallpapers.clear();
+    }
+
+    // -- hide the source mpv windows everywhere ----------------------------
+    _installWindowHiding() {
+        const self = this;
+        const filterActors = arr => arr.filter(a => !isMarkerWindow(a.meta_window));
+        const filterWindows = arr => arr.filter(w => !isMarkerWindow(w));
+
+        this._injections.overrideMethod(
+            Shell.Global.prototype, 'get_window_actors',
+            original => {
+                self._getAllWindowActors = () => original.call(global);
+                return function () {
+                    return filterActors(original.call(this));
+                };
+            });
+        this._injections.overrideMethod(
+            Workspace.Workspace.prototype, '_isOverviewWindow',
+            original => function (win) {
+                return isMarkerWindow(win) ? false : original.call(this, win);
+            });
+        this._injections.overrideMethod(
+            WorkspaceThumbnail.WorkspaceThumbnail.prototype, '_isOverviewWindow',
+            original => function (win) {
+                return isMarkerWindow(win) ? false : original.call(this, win);
+            });
+        this._injections.overrideMethod(
+            Meta.Display.prototype, 'get_tab_list',
+            original => function (type, workspace) {
+                return filterWindows(original.call(this, type, workspace));
+            });
+        this._injections.overrideMethod(
+            Shell.WindowTracker.prototype, 'get_window_app',
+            original => function (win) {
+                return isMarkerWindow(win) ? null : original.call(this, win);
+            });
+        this._injections.overrideMethod(
+            Shell.App.prototype, 'get_windows',
+            original => function () {
+                return filterWindows(original.call(this));
+            });
+    }
+
+    // -- signals & policy --------------------------------------------------
+    _connectSignals() {
+        const wm = global.window_manager;
+        const display = global.display;
+        // Hide + keep-at-bottom every mpv window as it maps.
+        this._signals.push([wm, wm.connect_after('map', (_wm, actor) => this._onWindowMapped(actor))]);
+        for (const sig of ['in-fullscreen-changed'])
+            this._signals.push([display, display.connect(sig, () => this._debouncedPolicy())]);
+        for (const sig of ['window-created'])
+            this._signals.push([display, display.connect(sig, () => this._debouncedPolicy())]);
+        this._signals.push([wm, wm.connect('minimize', () => this._debouncedPolicy())]);
+        this._signals.push([wm, wm.connect('unminimize', () => this._debouncedPolicy())]);
+        this._signals.push([wm, wm.connect('size-change', () => this._debouncedPolicy())]);
+        this._signals.push([global.workspace_manager,
+            global.workspace_manager.connect('active-workspace-changed', () => this._debouncedPolicy())]);
+        this._signals.push([Main.layoutManager,
+            Main.layoutManager.connect('monitors-changed', () => this._debounce(() => this._restartPlayers()))]);
+        this._signals.push([Main.sessionMode, Main.sessionMode.connect('updated', () => this._updatePolicy())]);
+        this._setupIdleWatch();
+    }
+
+    _onWindowMapped(actor) {
+        const win = actor?.meta_window;
+        if (!isMarkerWindow(win))
+            return;
+        // Hidden actor => non-reactive (clicks never reach it) and out of the
+        // normal window layer; the Clone in the background keeps it visible.
+        try {
+            win.stick?.();
+            actor.hide();
+            actor.opacity = 0;
+        } catch (e) {
+            logError(e, 'motionwall: hide source failed');
+        }
+        // A freshly appeared renderer: (re)attach clones.
+        this._reattachWallpapers();
+    }
+
+    _reattachWallpapers() {
+        for (const w of this._wallpapers)
+            w._apply();
+    }
+
+    _debounce(fn) {
+        if (this._debounceId)
+            GLib.source_remove(this._debounceId);
+        this._debounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DEBOUNCE_MS, () => {
+            this._debounceId = 0;
+            fn();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _debouncedPolicy() {
+        this._debounce(() => this._updatePolicy());
     }
 
     _computeOccluded() {
         if (Main.overview.visible)
-            return false;               // the overview shows the desktop thumbnails
-        const monitors = Main.layoutManager.monitors.length;
-        if (monitors === 0)
             return false;
-        const workspace = global.workspace_manager.get_active_workspace();
+        const nMonitors = Main.layoutManager.monitors.length;
+        if (nMonitors === 0)
+            return false;
+        const ws = global.workspace_manager.get_active_workspace();
         const covered = new Set();
-        for (const win of workspace.list_windows()) {
-            if (this._isCovering(win))
+        for (const win of ws.list_windows()) {
+            if (isMarkerWindow(win) || win.minimized)
+                continue;
+            if (win.get_window_type() !== Meta.WindowType.NORMAL)
+                continue;
+            if (win.is_fullscreen() || (win.maximized_horizontally && win.maximized_vertically))
                 covered.add(win.get_monitor());
         }
-        return covered.size >= monitors;
+        return covered.size >= nMonitors;
     }
 
-    _update() {
+    _updatePolicy() {
+        const cfg = this._config;
         const occluded = this._computeOccluded();
-        if (occluded === this._occluded)
+        if (occluded !== this._occluded) {
+            this._occluded = occluded;
+            this._dbus?.emit_signal('OccludedChanged', new GLib.Variant('(b)', [occluded]));
+            this._dbus?.emit_property_changed('Occluded', GLib.Variant.new_boolean(occluded));
+        }
+        const locked = Main.sessionMode.currentMode === 'unlock-dialog';
+        let paused = cfg.paused === true;
+        if (cfg.pause_on_fullscreen && occluded)
+            paused = true;
+        if (cfg.pause_on_lock && locked)
+            paused = true;
+        if (cfg.pause_on_idle && this._idle)
+            paused = true;
+        this._setPaused(paused);
+    }
+
+    // -- idle watch (Meta.IdleMonitor) -------------------------------------
+    _setupIdleWatch() {
+        this._idle = false;
+        try {
+            const backend = global.backend ?? Meta.get_backend?.();
+            this._idleMonitor = backend?.get_core_idle_monitor?.()
+                ?? Meta.IdleMonitor?.get_core?.();
+        } catch {
+            this._idleMonitor = null;
+        }
+        this._armIdleWatch();
+    }
+
+    _armIdleWatch() {
+        this._removeIdleWatches();
+        const minutes = this._config.idle_minutes || 5;
+        if (!this._idleMonitor || !this._config.pause_on_idle)
             return;
-        this._occluded = occluded;
-        if (!this._dbus)
-            return;
-        this._dbus.emit_property_changed('Occluded', GLib.Variant.new_boolean(occluded));
-        this._dbus.emit_signal('OccludedChanged', GLib.Variant.new('(b)', [occluded]));
+        try {
+            this._idleWatchId = this._idleMonitor.add_idle_watch(minutes * 60 * 1000, () => {
+                this._idle = true;
+                this._updatePolicy();
+                this._activeWatchId = this._idleMonitor.add_user_active_watch(() => {
+                    this._activeWatchId = 0;
+                    this._idle = false;
+                    this._updatePolicy();
+                });
+            });
+        } catch (e) {
+            logError(e, 'motionwall: idle watch failed');
+        }
+    }
+
+    _removeIdleWatches() {
+        try {
+            if (this._idleMonitor && this._idleWatchId)
+                this._idleMonitor.remove_watch(this._idleWatchId);
+            if (this._idleMonitor && this._activeWatchId)
+                this._idleMonitor.remove_watch(this._activeWatchId);
+        } catch {
+            // ignore
+        }
+        this._idleWatchId = 0;
+        this._activeWatchId = 0;
+        this._idle = false;
+    }
+
+    // -- config watch ------------------------------------------------------
+    _watchConfig() {
+        try {
+            const file = Gio.File.new_for_path(CONFIG_PATH);
+            this._configMonitor = file.monitor_file(Gio.FileMonitorFlags.NONE, null);
+            this._configMonitor.connect('changed', () => this._debounce(() => this._onConfigChanged()));
+        } catch (e) {
+            logError(e, 'motionwall: cannot watch config');
+        }
+    }
+
+    _onConfigChanged() {
+        const old = this._config;
+        this._config = readConfig();
+        const needRestart = old.video !== this._config.video
+            || old.enabled !== this._config.enabled
+            || old.scaling !== this._config.scaling
+            || old.hwdec !== this._config.hwdec
+            || old.mute !== this._config.mute
+            || old.speed !== this._config.speed
+            || old.loop !== this._config.loop;
+        if (old.idle_minutes !== this._config.idle_minutes
+            || old.pause_on_idle !== this._config.pause_on_idle)
+            this._armIdleWatch();
+        if (needRestart)
+            this._restartPlayers();
+        else
+            this._updatePolicy();
     }
 }

@@ -4,7 +4,10 @@ Animated **video wallpaper for Ubuntu / GNOME** that is designed around one goal
 look great while costing almost nothing.
 
 * Plays any video file (MP4, MKV, WebM, MOV, GIF …) as the desktop background.
-* Works on **GNOME Wayland** (Ubuntu's default) as well as X11 sessions.
+* On **GNOME Wayland** (Ubuntu's default) a bundled GNOME Shell extension renders the
+  video in the desktop's own background layer (behind every window, non-clickable,
+  visible in the overview). On **X11/Xorg** a lightweight daemon does the same with
+  desktop-layer windows.
 * Hardware decoded on the GPU (NVDEC / Vulkan video / VA-API) — a 4K loop uses
   ~3 % of one CPU core on an RTX-class card, ~0 % when paused.
 * Pauses automatically when nobody can see it: screen locked, user idle, on

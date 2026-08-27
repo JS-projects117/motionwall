@@ -1,8 +1,9 @@
 {
   "uuid": "motionwall@motionwall",
   "name": "Motionwall",
-  "description": "Tells the Motionwall wallpaper daemon when a full-screen or maximized window covers every monitor, so the video can pause and save power.",
+  "description": "Plays a video as the desktop background, rendered inside GNOME Shell's own background layer so it sits behind every window, cannot be clicked, and shows through the Activities overview. Reads ~/.config/motionwall/config.json (written by the Motionwall app and CLI). Hardware-decoded by mpv.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/",
-  "version": 1
+  "version": 2,
+  "settings-schema": ""
 }
