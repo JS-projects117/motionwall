@@ -31,7 +31,10 @@ class SessionMonitor:
         self._idle_watch_id: Optional[int] = None
         self._active_watch_id: Optional[int] = None
         self._idle_ms = 0
+        self._idle_generation = 0
         self._subs = []
+        self._probe_source = 0
+        self._name_watch = 0
         self._subscribe_screensaver()
         self._subscribe_upower()
         self._subscribe_idle_signals()
@@ -81,7 +84,7 @@ class SessionMonitor:
 
         def fired(conn, sender, opath, siface, signal, params):
             watch_id = params.unpack()[0]
-            if watch_id == self._idle_watch_id:
+            if watch_id is not None and watch_id == self._idle_watch_id:
                 self.on_change("idle", True)
                 self._call(dest, path, iface, "AddUserActiveWatch", None, GLib.VariantType("(u)"),
                            self._store_active_watch)
@@ -99,29 +102,42 @@ class SessionMonitor:
         if wanted == self._idle_ms:
             return
         self._idle_ms = wanted
+        self._idle_generation += 1
+        generation = self._idle_generation
         for wid in (self._idle_watch_id, self._active_watch_id):
             if wid is not None:
-                self._call(dest, path, iface, "RemoveWatch", GLib.Variant("(u)", (wid,)))
+                self._remove_watch(wid)
         self._idle_watch_id = self._active_watch_id = None
         self.on_change("idle", False)
         if wanted:
             def store(result):
-                self._idle_watch_id = result.unpack()[0] if result is not None else None
-                if self._idle_watch_id is not None:
-                    log.info("idle watch %s armed for %d min", self._idle_watch_id, minutes)
+                wid = result.unpack()[0] if result is not None else None
+                if wid is None:
+                    return
+                if generation != self._idle_generation:      # superseded while in flight
+                    self._remove_watch(wid)
+                    return
+                self._idle_watch_id = wid
+                log.info("idle watch %s armed for %d min", wid, minutes)
             self._call(dest, path, iface, "AddIdleWatch", GLib.Variant("(t)", (wanted,)), GLib.VariantType("(u)"), store)
+
+    def _remove_watch(self, wid: int) -> None:
+        dest, path, iface = IDLE_MONITOR
+        self._call(dest, path, iface, "RemoveWatch", GLib.Variant("(u)", (wid,)))
 
     # -- shell extension (occlusion) ---------------------------------------
     def _subscribe_extension(self):
         self._sub(SHELL_BUS_NAME, SHELL_INTERFACE, "OccludedChanged", SHELL_OBJECT_PATH,
                   lambda *a: self._extension_value(bool(a[5].unpack()[0])))
-        Gio.bus_watch_name_on_connection(self.bus, SHELL_BUS_NAME, Gio.BusNameWatcherFlags.NONE,
-                                         lambda *_: self.probe_extension(), lambda *_: self._extension_lost())
-        GLib.timeout_add_seconds(30, self._periodic_probe)
+        self._name_watch = Gio.bus_watch_name_on_connection(
+            self.bus, SHELL_BUS_NAME, Gio.BusNameWatcherFlags.NONE,
+            lambda *_: self.probe_extension(), lambda *_: self._extension_lost())
+        # Re-read the property periodically even while the extension is believed present:
+        # extensions unload on screen lock / disable without the shell's bus name vanishing.
+        self._probe_source = GLib.timeout_add_seconds(30, self._periodic_probe)
 
     def _periodic_probe(self):
-        if not self.extension_present:
-            self.probe_extension()
+        self.probe_extension()
         return True
 
     def probe_extension(self):
@@ -150,3 +166,12 @@ class SessionMonitor:
         for sid in self._subs:
             self.bus.signal_unsubscribe(sid)
         self._subs = []
+        if self._probe_source:
+            GLib.source_remove(self._probe_source)
+            self._probe_source = 0
+        if self._name_watch:
+            Gio.bus_unwatch_name(self._name_watch)
+            self._name_watch = 0
+        for wid in (self._idle_watch_id, self._active_watch_id):
+            if wid is not None:
+                self._remove_watch(wid)

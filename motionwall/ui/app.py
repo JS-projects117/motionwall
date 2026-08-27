@@ -10,13 +10,14 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from .. import APP_ID, __version__, autostart, config, library  # noqa: E402
 from ..client import DaemonClient  # noqa: E402
 from ..config import HWDEC_MODES, SCALING_MODES  # noqa: E402
 
 REFRESH_MS = 2000
+SETTING_DEBOUNCE_MS = 300
 
 SCALING_LABELS = {"fill": "Fill (crop to cover)", "fit": "Fit (letterbox)", "stretch": "Stretch"}
 HWDEC_LABELS = {"auto-safe": "Automatic (recommended)", "auto": "Automatic (all methods)", "nvdec": "NVIDIA NVDEC",
@@ -47,7 +48,8 @@ class CpuMeter:
         seen = False
         for pid in pids:
             try:
-                fields = open(f"/proc/{pid}/stat").read().split(")")[-1].split()
+                with open(f"/proc/{pid}/stat") as fh:
+                    fields = fh.read().split(")")[-1].split()
                 ticks = int(fields[11]) + int(fields[12])
             except (OSError, ValueError, IndexError):
                 continue
@@ -102,8 +104,10 @@ class MainWindow(Adw.ApplicationWindow):
         self._status: Optional[dict] = None
         self._items: Dict[str, LibraryItem] = {}
         self._updating = False
+        self._pending: Dict[str, int] = {}     # debounced setting writes (key -> source id)
         self._build()
         self._load_library()
+        library.prune_thumbnails()
         self._refresh()
         GLib.timeout_add(REFRESH_MS, self._refresh)
         self.client.subscribe(lambda state: self._refresh())
@@ -207,7 +211,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.speed_row.set_title("Playback speed")
         self.speed_row.set_digits(2)
         self.speed_row.set_value(cfg.speed)
-        self.speed_row.connect("notify::value", lambda r, _: self._set("speed", round(r.get_value(), 2)))
+        self.speed_row.connect("notify::value", lambda r, _: self._set_debounced("speed", round(r.get_value(), 2)))
         display.add(self.speed_row)
         page.append(display)
 
@@ -219,7 +223,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.volume_row = Adw.SpinRow.new_with_range(0, 100, 5)
         self.volume_row.set_title("Volume")
         self.volume_row.set_value(cfg.volume)
-        self.volume_row.connect("notify::value", lambda r, _: self._set("volume", int(r.get_value())))
+        self.volume_row.connect("notify::value", lambda r, _: self._set_debounced("volume", int(r.get_value())))
         self.mute_row.bind_property("active", self.volume_row, "sensitive",
                                     GObject_BindingFlags_INVERT_BOOLEAN())
         audio.add(self.volume_row)
@@ -240,8 +244,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.idle_minutes_row = Adw.SpinRow.new_with_range(1, 240, 1)
         self.idle_minutes_row.set_title("Away after (minutes)")
         self.idle_minutes_row.set_value(cfg.idle_minutes)
-        self.idle_minutes_row.connect("notify::value", lambda r, _: self._set("idle_minutes", int(r.get_value())))
-        self.idle_row.bind_property("active", self.idle_minutes_row, "sensitive", 0)
+        self.idle_minutes_row.connect("notify::value",
+                                      lambda r, _: self._set_debounced("idle_minutes", int(r.get_value())))
+        self.idle_row.bind_property("active", self.idle_minutes_row, "sensitive", GObject.BindingFlags.SYNC_CREATE)
         power.add(self.idle_minutes_row)
         self.battery_row = self._switch(power, "Pause on battery power", None, cfg.pause_on_battery, "pause_on_battery")
         self.fullscreen_row = self._switch(power, "Pause behind full-screen apps",
@@ -277,6 +282,9 @@ class MainWindow(Adw.ApplicationWindow):
     def _set(self, key: str, value, extra: bool = False):
         if self._updating:
             return
+        # The daemon also writes the config (video, enabled): always merge into a fresh copy
+        # so a stale snapshot never resurrects a stopped or replaced wallpaper.
+        self.cfg = config.load()
         if extra:
             if self.cfg.extra.get(key) == value:
                 return
@@ -289,6 +297,18 @@ class MainWindow(Adw.ApplicationWindow):
         if self.client.is_running():
             self._daemon_call("ReloadConfig", autostart=False, refresh=False)
 
+    def _set_debounced(self, key: str, value, extra: bool = False):
+        if self._updating:
+            return
+        if key in self._pending:
+            GLib.source_remove(self._pending[key])
+
+        def flush():
+            self._pending.pop(key, None)
+            self._set(key, value, extra)
+            return False
+        self._pending[key] = GLib.timeout_add(SETTING_DEBOUNCE_MS, flush)
+
     def _on_monitor_changed(self, row, _):
         idx = row.get_selected()
         if 0 <= idx < len(self._monitor_names):
@@ -298,6 +318,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self._updating:
             return
         autostart.set_enabled(row.get_active())
+        self.cfg = config.load()
         self.cfg.autostart = row.get_active()
         config.save(self.cfg)
 
@@ -426,13 +447,15 @@ class MainWindow(Adw.ApplicationWindow):
             text = f"Paused - {status.get('pause_reason_label') or 'paused'}"
         elif state == "error":
             text = f"Error: {status.get('error') or 'mpv failed, see ~/.cache/motionwall/'}"
+        elif video and not status.get("enabled", True):
+            text = "Stopped - press Play to bring it back, or choose another video"
         else:
             text = "Stopped - choose a video from the library"
         self.np_state.set_label(text)
-        self.play_button.set_sensitive(state in ("playing", "paused"))
-        self.stop_button.set_sensitive(bool(video))
+        self.play_button.set_sensitive(state in ("playing", "paused") or (state == "stopped" and bool(video)))
+        self.stop_button.set_sensitive(state in ("playing", "paused"))
         content = self.play_button.get_child()
-        if state == "paused" or not status.get("policy", {}).get("user_play", True):
+        if state != "playing":
             content.set_icon_name("media-playback-start-symbolic")
             content.set_label("Play")
         else:
@@ -450,6 +473,9 @@ class MainWindow(Adw.ApplicationWindow):
         parts = []
         pids = [p["pid"] for p in status.get("players", []) if p.get("pid")]
         for p in status.get("players", []):
+            if p.get("unloaded"):
+                parts.append(f"{p['monitor']}: released (decoder and GPU memory freed while paused)")
+                continue
             hw = p.get("hwdec-current") or ("software" if p.get("alive") else "starting")
             fps = p.get("estimated-vf-fps")
             size = f"{p.get('video-params/w')}x{p.get('video-params/h')}" if p.get("video-params/w") else ""
@@ -479,16 +505,23 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self._monitor_names = names
         self._updating = True
-        self.monitor_row.set_model(Gtk.StringList.new(["All monitors"] + names[1:]))
-        self.monitor_row.set_selected(names.index(self.cfg.monitors) if self.cfg.monitors in names else 0)
-        self._updating = False
+        try:
+            self.monitor_row.set_model(Gtk.StringList.new(["All monitors"] + names[1:]))
+            if self.cfg.monitors in names:
+                self.monitor_row.set_selected(names.index(self.cfg.monitors))
+            else:
+                self.monitor_row.set_selected(0)
+                if self.cfg.monitors != "all":      # configured output is gone: persist the fallback
+                    self._updating = False
+                    self._set("monitors", "all")
+        finally:
+            self._updating = False
 
     def _toast(self, text: str):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
 
 
 def GObject_BindingFlags_INVERT_BOOLEAN():
-    from gi.repository import GObject
     return GObject.BindingFlags.SYNC_CREATE | GObject.BindingFlags.INVERT_BOOLEAN
 
 

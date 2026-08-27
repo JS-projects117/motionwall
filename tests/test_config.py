@@ -13,6 +13,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg.mute)
         self.assertEqual(cfg.hwdec, "auto-safe")
         self.assertTrue(cfg.loop)
+        self.assertTrue(cfg.enabled)
 
     def test_roundtrip_preserves_unknown_keys(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -21,6 +21,7 @@ python3 -c 'import gi; gi.require_version("Gtk","4.0"); from gi.repository impor
 python3 -c 'import gi; gi.require_version("Adw","1"); from gi.repository import Adw' 2>/dev/null || MISSING+=(gir1.2-adw-1)
 python3 -c 'import Xlib' 2>/dev/null || MISSING+=(python3-xlib)
 command -v ffmpeg >/dev/null || MISSING+=(ffmpeg)
+[ "$WANT_EXT" = 1 ] && ! command -v zip >/dev/null && MISSING+=(zip)
 HAVE_MPV=0
 if command -v mpv >/dev/null || [ -x "$DATA/motionwall/runtime/usr/bin/mpv" ]; then HAVE_MPV=1; fi
 if [ "$HAVE_MPV" = 0 ] && [ "$WANT_LOCAL_MPV" = 1 ]; then
@@ -47,8 +48,9 @@ EOL
 chmod +x "$LAUNCHER"
 
 mkdir -p "$DATA/applications" "$DATA/dbus-1/services" "$DATA/icons/hicolor/scalable/apps"
-sed "s|@LAUNCHER@|$LAUNCHER|g" "$HERE/data/org.motionwall.Motionwall.desktop" > "$DATA/applications/org.motionwall.Motionwall.desktop"
-sed "s|@LAUNCHER@|$LAUNCHER|g" "$HERE/data/org.motionwall.Daemon.service" > "$DATA/dbus-1/services/org.motionwall.Daemon.service"
+LAUNCHER_ESC="$(printf '%s' "$LAUNCHER" | sed 's/[&|\\]/\\&/g')"
+sed "s|@LAUNCHER@|$LAUNCHER_ESC|g" "$HERE/data/org.motionwall.Motionwall.desktop" > "$DATA/applications/org.motionwall.Motionwall.desktop"
+sed "s|@LAUNCHER@|$LAUNCHER_ESC|g" "$HERE/data/org.motionwall.Daemon.service" > "$DATA/dbus-1/services/org.motionwall.Daemon.service"
 cp "$HERE/data/org.motionwall.Motionwall.svg" "$DATA/icons/hicolor/scalable/apps/"
 command -v update-desktop-database >/dev/null && update-desktop-database "$DATA/applications" 2>/dev/null || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" 2>/dev/null || true
@@ -57,7 +59,7 @@ gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/
   --method org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 || true
 
 if [ "$WANT_AUTOSTART" = 1 ]; then
-  MOTIONWALL_LAUNCHER="$LAUNCHER" python3 -c "import sys; sys.path.insert(0,'$APPDIR'); from motionwall import autostart, config; autostart.set_enabled(True); c=config.load(); c.autostart=True; config.save(c)"
+  MOTIONWALL_LAUNCHER="$LAUNCHER" PYTHONPATH="$APPDIR" python3 -c "from motionwall import autostart, config; autostart.set_enabled(True); c=config.load(); c.autostart=True; config.save(c)"
   log "autostart enabled"
 fi
 
@@ -76,7 +78,7 @@ if gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedeskt
   log "restarting the running daemon"
   "$LAUNCHER" quit-daemon >/dev/null 2>&1 || true
   sleep 1
-  "$LAUNCHER" status >/dev/null 2>&1 || true
+  "$LAUNCHER" resume >/dev/null 2>&1 || true      # `resume` activates the daemon (status does not)
 fi
 
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH; log out and back in, or run $LAUNCHER";; esac

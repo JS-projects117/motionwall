@@ -25,6 +25,8 @@ log = logging.getLogger("motionwall.engine")
 
 MAX_RETRIES = 5
 HWDEC_RETRIES = 5          # re-attempt hardware decoding this many times if it fell back to software
+STATS_CACHE_S = 1.0
+STABLE_RUN_S = 60.0        # a player alive this long gets its crash counter reset
 STATS_PROPERTIES = ("hwdec-current", "estimated-vf-fps", "container-fps", "frame-drop-count",
                     "video-params/w", "video-params/h", "pause", "path", "vo-configured")
 
@@ -68,6 +70,8 @@ def build_mpv_args(mpv: str, cfg: Config, wid: int, socket_path: str, video: Opt
         "--stop-screensaver=no",
         "--msg-level=all=warn", "--terminal=yes",
         "--background=color", "--background-color=#000000",
+        # local looping file: tiny read-ahead, no cache thread
+        "--cache=no", "--demuxer-readahead-secs=1", "--demuxer-max-bytes=32MiB",
     ]
     args += scaling_args(cfg.scaling)
     extra = cfg.extra.get("mpv_args")
@@ -161,6 +165,8 @@ class Player:
     next_restart: float = 0.0
     failed: bool = False
     hwdec_retries: int = 0
+    started_at: float = 0.0
+    unloaded: bool = False      # file released (mpv idle) to free decoder/GPU memory
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -175,6 +181,9 @@ class Engine:
         self.players: List[Player] = []
         self.video: Optional[str] = None
         self.paused = False
+        self.released = False
+        self._stats_cache: Optional[List[Dict[str, Any]]] = None
+        self._stats_time = 0.0
 
     @property
     def available(self) -> bool:
@@ -216,10 +225,16 @@ class Engine:
             p.failed = True
             return False
         p.ipc = MpvIpc(p.socket_path)
+        p.started_at = time.monotonic()
+        p.unloaded = False
         if not p.ipc.connect():
-            log.error("mpv IPC socket never appeared for %s", p.name)
+            log.error("mpv IPC socket never appeared for %s; killing it so supervision can retry", p.name)
+            self._kill(p)
+            p.proc = None
             return False
-        if self.paused:
+        if self.released:
+            self._release(p)
+        elif self.paused:
             self._safe(p, "set_property", "pause", True)
         return True
 
@@ -251,7 +266,11 @@ class Engine:
         """Restart dead players with exponential backoff. Call periodically."""
         now = time.monotonic() if now is None else now
         for p in self.players:
-            if p.alive() or p.failed:
+            if p.alive():
+                if p.attempts and now - p.started_at > STABLE_RUN_S:
+                    p.attempts = 0          # a long healthy run forgives earlier crashes
+                continue
+            if p.failed:
                 continue
             if p.proc is not None and p.next_restart == 0.0:
                 log.warning("mpv for %s exited with %s", p.name, p.proc.returncode)
@@ -274,21 +293,63 @@ class Engine:
             return None
         try:
             return p.ipc.command(*cmd)
-        except (OSError, RuntimeError) as exc:
-            log.debug("ipc %s failed for %s: %s", cmd[0], p.name, exc)
+        except OSError as exc:
+            # socket dropped: reconnect once, then retry the command
+            log.debug("ipc %s failed for %s (%s); reconnecting", cmd[0], p.name, exc)
+            p.ipc.close()
+            if p.alive() and p.ipc.connect(timeout=0.5):
+                try:
+                    return p.ipc.command(*cmd)
+                except (OSError, RuntimeError) as exc2:
+                    log.debug("ipc %s failed again for %s: %s", cmd[0], p.name, exc2)
+            return None
+        except RuntimeError as exc:
+            log.debug("ipc %s rejected for %s: %s", cmd[0], p.name, exc)
             return None
 
-    def set_paused(self, paused: bool) -> None:
-        self.paused = paused
+    def set_playback(self, mode: str) -> None:
+        """mode: 'play' | 'pause' | 'release'.
+
+        'release' unloads the file (mpv stays idle in the window) so the decoder,
+        frame pool and GPU buffers are freed - used for long pauses (idle, lock).
+        """
+        self.paused = mode != "play"
+        self.released = mode == "release"
         for p in self.players:
-            self._safe(p, "set_property", "pause", paused)
+            if mode == "release":
+                self._release(p)
+            elif mode == "pause":
+                if p.unloaded:
+                    self._reload(p)
+                self._safe(p, "set_property", "pause", True)
+            else:
+                if p.unloaded:
+                    self._reload(p)
+                self._safe(p, "set_property", "pause", False)
+        self._stats_cache = None
+
+    def set_paused(self, paused: bool) -> None:
+        self.set_playback("pause" if paused else "play")
+
+    def _release(self, p: Player) -> None:
+        if not p.unloaded:
+            self._safe(p, "stop")
+            p.unloaded = True
+
+    def _reload(self, p: Player) -> None:
+        if self.video:
+            self._safe(p, "loadfile", self.video, "replace")
+        p.unloaded = False
 
     def load(self, video: str) -> None:
         self.video = video
+        self.released = False
         for p in self.players:
             self._safe(p, "loadfile", video, "replace")
+            p.unloaded = False
             p.attempts = 0
             p.hwdec_retries = 0
+        self._stats_cache = None
 
     def retry_hwdec(self) -> int:
         """Reload the file on players stuck in software decoding (e.g. after a transient GPU OOM).
@@ -299,7 +360,7 @@ class Engine:
             return 0
         reloaded = 0
         for p in self.players:
-            if not p.alive() or p.hwdec_retries >= HWDEC_RETRIES:
+            if not p.alive() or p.unloaded or p.hwdec_retries >= HWDEC_RETRIES:
                 continue
             if self._safe(p, "get_property", "hwdec-current") != "no":
                 continue
@@ -329,12 +390,21 @@ class Engine:
                 or old.extra.get("quality") != new.extra.get("quality")
                 or old.extra.get("mpv_args") != new.extra.get("mpv_args"))
 
-    def stats(self) -> List[Dict[str, Any]]:
+    def stats(self, max_age: float = STATS_CACHE_S) -> List[Dict[str, Any]]:
+        """Per-player mpv properties; cached for max_age seconds (each property is an IPC round trip)."""
+        now = time.monotonic()
+        if self._stats_cache is not None and now - self._stats_time < max_age:
+            return self._stats_cache
         out = []
         for p in self.players:
             entry: Dict[str, Any] = {"monitor": p.name, "pid": p.proc.pid if p.proc else None,
                                      "alive": p.alive(), "failed": p.failed, "restarts": p.attempts}
+            entry["unloaded"] = p.unloaded
             for prop in STATS_PROPERTIES:
-                entry[prop] = self._safe(p, "get_property", prop)
+                entry[prop] = self._safe(p, "get_property", prop) if p.ipc else None
             out.append(entry)
+        self._stats_cache, self._stats_time = out, now
         return out
+
+    def any_failed(self) -> bool:
+        return any(p.failed for p in self.players)

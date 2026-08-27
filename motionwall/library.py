@@ -79,6 +79,25 @@ def make_thumbnail(video: str, dest: Path, width: int = 480) -> bool:
     return dest.exists()
 
 
+def prune_thumbnails(items: Optional[List[str]] = None, base: Optional[Path] = None) -> int:
+    """Delete cached thumbnails that no library entry references; returns the count removed."""
+    base = base or thumbs_dir()
+    items = load() if items is None else items
+    keep = {thumb_path(v, base).name for v in items}
+    removed = 0
+    try:
+        for entry in base.iterdir():
+            if entry.suffix == ".jpg" and entry.name not in keep:
+                try:
+                    entry.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return removed
+
+
 def ensure_thumbnail_async(video: str, done: Callable[[str, Optional[str]], None]) -> None:
     """Generate the thumbnail in a worker thread; done(video, path_or_None) runs in that thread."""
     dest = thumb_path(video)

@@ -23,6 +23,8 @@ log = logging.getLogger("motionwall.daemon")
 
 CHECK_INTERVAL_S = 3
 HWDEC_RETRY_INTERVAL_S = 60
+SCREEN_CHANGE_DEBOUNCE_MS = 500
+RELEASE_REASONS = ("idle", "locked")   # long pauses: unload the file to free decoder/GPU memory
 
 
 class Daemon:
@@ -39,6 +41,7 @@ class Daemon:
         self._last_state = None
         self._error: Optional[str] = None
         self._ticks = 0
+        self._screen_change_source = 0
 
     # -- startup -----------------------------------------------------------
     def run(self) -> int:
@@ -73,7 +76,7 @@ class Daemon:
 
     def _on_name_acquired(self, conn, name):
         log.info("motionwall daemon %s ready (pid %d)", __version__, os.getpid())
-        if self.cfg.video:
+        if self.cfg.video and self.cfg.enabled:
             self._start_playback(self.cfg.video)
         self._apply_policy()
 
@@ -105,6 +108,7 @@ class Daemon:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"no such file: {path}")
         self.cfg.video = path
+        self.cfg.enabled = True
         config.save(self.cfg)
         self.state.user_play = True
         if self.engine.players and self.windows:
@@ -119,15 +123,28 @@ class Daemon:
 
     def dbus_Resume(self):
         self.state.user_play = True
+        self._ensure_enabled()
         self._apply_policy()
 
     def dbus_Toggle(self):
-        self.state.user_play = not self.state.user_play
+        if not self.windows and self.cfg.video:
+            self.state.user_play = True
+            self._ensure_enabled()
+        else:
+            self.state.user_play = not self.state.user_play
         self._apply_policy()
+
+    def _ensure_enabled(self):
+        """Resume after `stop`: the video is remembered, only the enabled flag was cleared."""
+        if not self.cfg.enabled:
+            self.cfg.enabled = True
+            config.save(self.cfg)
+        if self.cfg.video and not self.windows:
+            self._start_playback(self.cfg.video)
 
     def dbus_Stop(self):
         self._stop_playback()
-        self.cfg.video = ""
+        self.cfg.enabled = False
         config.save(self.cfg)
         self._apply_policy()
 
@@ -141,14 +158,15 @@ class Daemon:
             self.monitor.set_idle_timeout(self.cfg.idle_minutes, self.cfg.pause_on_idle)
         if old.autostart != self.cfg.autostart:
             autostart.set_enabled(self.cfg.autostart)
-        if self.windows and self.cfg.video:
+        wanted = bool(self.cfg.video and self.cfg.enabled)
+        if self.windows and wanted:
             if self.engine.needs_restart(old, self.cfg) or old.video != self.cfg.video:
                 self._start_playback(self.cfg.video)
             else:
                 self.engine.apply_config(self.cfg)
-        elif self.cfg.video and not self.windows:
+        elif wanted and not self.windows:
             self._start_playback(self.cfg.video)
-        elif not self.cfg.video and self.windows:
+        elif not wanted and self.windows:
             self._stop_playback()
         self._apply_policy()
 
@@ -162,9 +180,10 @@ class Daemon:
             self._error = runtime.mpv_missing_message()
             return
         self._error = None
+        self.engine.stop()                       # never leave mpv drawing into a destroyed window
         self.windows = self.layer.create_windows(self.cfg.monitors)
         self.engine.start(self.windows, video)
-        self.engine.set_paused(not policy.decide(self.state, self.cfg)[0])
+        self.engine.set_playback(self._playback_mode())
 
     def _stop_playback(self):
         self.engine.stop()
@@ -173,9 +192,23 @@ class Daemon:
         self.windows = []
 
     def _on_screen_change(self):
+        # RandR emits several events per hot-plug; coalesce them into one rebuild
+        if self._screen_change_source:
+            GLib.source_remove(self._screen_change_source)
+        self._screen_change_source = GLib.timeout_add(SCREEN_CHANGE_DEBOUNCE_MS, self._rebuild_after_screen_change)
+
+    def _rebuild_after_screen_change(self):
+        self._screen_change_source = 0
         if self.windows and self.cfg.video:
             log.info("monitor layout changed; rebuilding wallpaper windows")
             self._start_playback(self.cfg.video)
+        return False
+
+    def _playback_mode(self) -> str:
+        play, reason = policy.decide(self.state, self.cfg)
+        if play:
+            return "play"
+        return "release" if reason in RELEASE_REASONS else "pause"
 
     def _on_session_change(self, field: str, value):
         if getattr(self.state, field) != value:
@@ -184,32 +217,34 @@ class Daemon:
             self._apply_policy()
 
     def _apply_policy(self):
-        play, reason = policy.decide(self.state, self.cfg)
         if self.windows:
-            self.engine.set_paused(not play)
-        state = self.status()["state"]
+            self.engine.set_playback(self._playback_mode())
+        state = self.state_name()
         if state != self._last_state:
             self._last_state = state
             if self.bus:
                 self.bus.emit_signal(None, DAEMON_OBJECT_PATH, DAEMON_INTERFACE, "StatusChanged",
                                      GLib.Variant("(s)", (state,)))
 
+    def state_name(self) -> str:
+        """Cheap state computation (no mpv IPC)."""
+        play, _ = policy.decide(self.state, self.cfg)
+        if self._error:
+            return "error"
+        if not self.cfg.video or not self.windows:
+            return "stopped"
+        if self.engine.any_failed():
+            return "error"
+        return "playing" if play else "paused"
+
     def status(self) -> dict:
         play, reason = policy.decide(self.state, self.cfg)
         players = self.engine.stats() if self.windows else []
-        if self._error:
-            state = "error"
-        elif not self.cfg.video or not self.windows:
-            state = "stopped"
-        elif any(p["failed"] for p in players):
-            state = "error"
-        elif not play:
-            state = "paused"
-        else:
-            state = "playing"
+        state = self.state_name()
         show_reason = not play and state in ("paused", "playing")
         return {
             "state": state,
+            "enabled": self.cfg.enabled,
             "video": self.cfg.video,
             "pause_reason": reason if show_reason else None,
             "pause_reason_label": policy.REASON_LABELS.get(reason, reason) if show_reason else None,
@@ -234,9 +269,16 @@ class Daemon:
 
     def _tick(self):
         self._ticks += 1
+        if self._error and not self.engine.available:
+            self.engine.mpv = runtime.find_mpv()      # mpv may have been installed meanwhile
+            if self.engine.available:
+                self._error = None
+                if self.cfg.video and self.cfg.enabled:
+                    self._start_playback(self.cfg.video)
+                self._apply_policy()
         if self.windows:
             self.engine.check()
-            if any(p.failed for p in self.engine.players):
+            if self.engine.any_failed():
                 self._apply_policy()
             if self._ticks % (HWDEC_RETRY_INTERVAL_S // CHECK_INTERVAL_S) == 0 and not self.engine.paused:
                 self.engine.retry_hwdec()
@@ -248,6 +290,8 @@ class Daemon:
         return False
 
     def _shutdown(self):
+        if self._screen_change_source:
+            GLib.source_remove(self._screen_change_source)
         if self.monitor:
             self.monitor.close()
         self.engine.stop()

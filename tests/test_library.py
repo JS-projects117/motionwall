@@ -38,6 +38,20 @@ class LibraryTests(unittest.TestCase):
             os.utime(video, (1, 1))
             self.assertNotEqual(first, library.thumb_path(str(video), Path(tmp)))
 
+    def test_prune_thumbnails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            video = base / "v.mp4"
+            video.write_bytes(b"abc")
+            keep = library.thumb_path(str(video), base)
+            keep.write_bytes(b"jpg")
+            (base / "orphan.jpg").write_bytes(b"jpg")
+            (base / "notes.txt").write_text("keep me")
+            self.assertEqual(library.prune_thumbnails([str(video)], base), 1)
+            self.assertTrue(keep.exists())
+            self.assertFalse((base / "orphan.jpg").exists())
+            self.assertTrue((base / "notes.txt").exists())
+
     def test_is_video(self):
         self.assertTrue(library.is_video("/x/Clip.MP4"))
         self.assertTrue(library.is_video("a.webm"))

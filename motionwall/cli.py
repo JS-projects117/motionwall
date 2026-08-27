@@ -96,6 +96,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             method = {"pause": "Pause", "resume": "Resume", "toggle": "Toggle", "stop": "Stop"}[args.command]
             if not client.is_running() and args.command in ("pause", "stop"):
+                if args.command == "stop":
+                    from . import config
+                    cfg = config.load()
+                    cfg.enabled = False
+                    config.save(cfg)
                 print("Motionwall daemon is not running.")
                 return 0
             client.call(method)

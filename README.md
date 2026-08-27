@@ -27,7 +27,7 @@ No root? `./install.sh --local-mpv` downloads mpv's .deb files with
 Flags: `--extension` installs the GNOME Shell extension (pause behind
 full-screen windows; needs a log-out/log-in on Wayland), `--autostart` restores
 the wallpaper at login. Everything is installed under `~/.local`; remove it with
-`./uninstall.sh` (`--purge` also deletes config, thumbnails and the local mpv).
+`./uninstall.sh` (`--purge` also deletes config and thumbnails).
 
 ## Use
 
@@ -38,7 +38,8 @@ the wallpaper at login. Everything is installed under `~/.local`; remove it with
 ```
 motionwall set ~/Videos/loop.mp4   # use this file
 motionwall pause | resume | toggle
-motionwall stop                    # back to the normal wallpaper
+motionwall stop                    # back to the normal wallpaper (video remembered)
+motionwall resume                  # bring it back
 motionwall status [--json]         # what is happening, decoder, fps, drops
 motionwall quit-daemon
 ```
@@ -78,6 +79,9 @@ power-saving rules, and start-at-login. Config lives in
   comes from `org.gnome.ScreenSaver`, idleness from
   `org.gnome.Mutter.IdleMonitor`, battery from UPower, occlusion from the
   extension. A paused mpv drops to ~0 % CPU and the GPU decoder goes idle.
+  For the long pauses (idle, lock) the file is *released* instead: mpv stays
+  attached to the window but unloads the decoder and its GPU frame pool, and
+  reloads the video (about a second) when you come back.
 * **Supervision.** If mpv dies it is restarted with exponential backoff
   (1, 2, 4, 8, 16 s, then give up and report *error*). Monitor hot-plug or
   resolution changes (RandR) rebuild the windows.

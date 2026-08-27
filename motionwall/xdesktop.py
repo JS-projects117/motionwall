@@ -14,6 +14,7 @@ the focused window's, so the timestamp is refreshed right before each request.
 
 import logging
 import os
+import select
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
@@ -150,12 +151,18 @@ class DesktopLayer:
         win.change_property(marker, Xatom.STRING, 8, b"t")
         self.display.flush()
         deadline = time.monotonic() + 0.5
-        while time.monotonic() < deadline:
-            ev = self.display.next_event()
-            if ev.type == X.PropertyNotify and ev.atom == marker:
-                return ev.time
-            self._handle_event(ev)
-        return 0
+        while True:
+            while self.display.pending_events():
+                ev = self.display.next_event()
+                if ev.type == X.PropertyNotify and ev.atom == marker:
+                    return ev.time
+                self._handle_event(ev)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return 0
+            ready, _, _ = select.select([self.display.fileno()], [], [], remaining)
+            if not ready:
+                return 0
 
     def lower_all(self) -> None:
         """Push our windows to the very bottom of the desktop layer."""

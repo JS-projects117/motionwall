@@ -31,6 +31,7 @@ if [ "${1:-}" = "--purge" ]; then
   rm -rf "$DATA/motionwall" "$CONF/motionwall" "$CACHE/motionwall"
   echo "removed Motionwall including configuration and runtime"
 else
+  rm -rf "$DATA/motionwall/runtime"      # the locally fetched mpv, if any
   rmdir "$DATA/motionwall" 2>/dev/null || true
-  echo "removed Motionwall (config kept in $CONF/motionwall; use --purge to delete it)"
+  echo "removed Motionwall (config kept in $CONF/motionwall; use --purge to delete it and the thumbnails)"
 fi

@@ -16,7 +16,8 @@ class ArgTests(unittest.TestCase):
         for flag in ("--no-config", "--profile=fast", "--wid=42", "--input-ipc-server=/tmp/s.sock",
                      "--hwdec=auto-safe", "--audio=no", "--loop-file=inf", "--osc=no", "--osd-bar=no",
                      "--input-default-bindings=no", "--msg-level=all=warn", "--stop-screensaver=no",
-                     "--keepaspect=yes", "--panscan=1.0", "--speed=1"):
+                     "--keepaspect=yes", "--panscan=1.0", "--speed=1", "--cache=no",
+                     "--demuxer-readahead-secs=1"):
             self.assertIn(flag, args, flag)
         self.assertEqual(args[-1], "/v.mp4")
         self.assertEqual(args[0], "/usr/bin/mpv")
@@ -120,6 +121,71 @@ class SupervisionTests(unittest.TestCase):
             eng.check(now=1000.0 + i * 100)
         self.assertTrue(p.failed)
         self.assertEqual(p.attempts, engine.MAX_RETRIES)
+
+
+class PlaybackModeTests(unittest.TestCase):
+    def _engine(self):
+        eng = engine.Engine(Config(), mpv_path="/bin/true")
+        eng.video = "/v.mp4"
+        p = engine.Player(1, "m", "/tmp/none.sock")
+        p.proc = SimpleNamespace(poll=lambda: None, returncode=None)
+        p.ipc = object()
+        eng.players = [p]
+        calls = []
+        eng._safe = lambda player, *cmd: calls.append(cmd)
+        return eng, p, calls
+
+    def test_release_unloads_and_play_reloads(self):
+        eng, p, calls = self._engine()
+        eng.set_playback("release")
+        self.assertTrue(p.unloaded)
+        self.assertTrue(eng.released)
+        self.assertIn(("stop",), calls)
+        eng.set_playback("release")                       # idempotent: no second stop
+        self.assertEqual(calls.count(("stop",)), 1)
+        eng.set_playback("play")
+        self.assertFalse(p.unloaded)
+        self.assertIn(("loadfile", "/v.mp4", "replace"), calls)
+        self.assertIn(("set_property", "pause", False), calls)
+
+    def test_pause_after_release_reloads_then_pauses(self):
+        eng, p, calls = self._engine()
+        eng.set_playback("release")
+        eng.set_playback("pause")
+        self.assertEqual(calls[-2:], [("loadfile", "/v.mp4", "replace"), ("set_property", "pause", True)])
+        self.assertTrue(eng.paused)
+        self.assertFalse(eng.released)
+
+    def test_stable_run_resets_crash_counter(self):
+        eng, p, calls = self._engine()
+        p.attempts = 3
+        p.started_at = 0.0
+        eng.check(now=engine.STABLE_RUN_S + 1)
+        self.assertEqual(p.attempts, 0)
+
+    def test_safe_reconnects_once_on_socket_error(self):
+        eng = engine.Engine(Config(), mpv_path="/bin/true")
+        p = engine.Player(1, "m", "/tmp/none.sock")
+        p.proc = SimpleNamespace(poll=lambda: None, returncode=None)
+        state = {"calls": 0}
+
+        class FlakyIpc:
+            def command(self, *cmd):
+                state["calls"] += 1
+                if state["calls"] == 1:
+                    raise OSError("socket closed")
+                return "ok"
+
+            def close(self):
+                state["closed"] = True
+
+            def connect(self, timeout=0.5):
+                state["reconnected"] = True
+                return True
+        p.ipc = FlakyIpc()
+        self.assertEqual(eng._safe(p, "get_property", "pause"), "ok")
+        self.assertTrue(state["reconnected"])
+        self.assertEqual(state["calls"], 2)
 
 
 class HwdecRetryTests(unittest.TestCase):
