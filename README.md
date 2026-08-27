@@ -31,8 +31,10 @@ the wallpaper at login. Everything is installed under `~/.local`; remove it with
 
 ## Use
 
-* Open **Motionwall** from the app grid, click **Add Video** (or drop files on
-  the window), click a thumbnail in the library.
+* Right-click any video in Files → **Open With → Motionwall**: it becomes the
+  wallpaper immediately (no window, just a notification).
+* Or open **Motionwall** from the app grid to manage a library of videos,
+  tweak scaling / power settings and watch the decoder stats.
 * Or from a terminal:
 
 ```

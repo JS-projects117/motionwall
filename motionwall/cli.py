@@ -66,14 +66,49 @@ def format_status(status: Optional[dict]) -> str:
     return "\n".join(lines)
 
 
+def open_files(files: List[str]) -> int:
+    from gi.repository import GLib
+    from . import library
+    from .client import DaemonClient
+    videos = [os.path.abspath(f) for f in files if os.path.isfile(f) and library.is_video(f)]
+    if not videos:
+        notify("Motionwall", "That is not a video file.")
+        return 2
+    for video in reversed(videos):
+        library.add(video)
+    try:
+        DaemonClient().call("SetWallpaper", videos[0])
+    except (GLib.Error, RuntimeError) as exc:
+        notify("Motionwall", f"Could not start the wallpaper: {getattr(exc, 'message', exc)}")
+        return 1
+    notify("Motionwall", f"{os.path.basename(videos[0])} is now your wallpaper.")
+    return 0
+
+
+def notify(title: str, body: str) -> None:
+    """Desktop notification via the session's notification server (best effort)."""
+    try:
+        from gi.repository import Gio, GLib
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        bus.call_sync("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                      "org.freedesktop.Notifications", "Notify",
+                      GLib.Variant("(susssasa{sv}i)", ("Motionwall", 0, "org.motionwall.Motionwall", title, body, [], {}, 5000)),
+                      None, Gio.DBusCallFlags.NONE, 2000, None)
+    except Exception:  # noqa: BLE001 - notifications are optional
+        print(f"{title}: {body}")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     if args.command == "daemon":
         from .daemon import main as daemon_main
         return daemon_main()
+    if args.command == "gui" and getattr(args, "files", None):
+        # "Open with Motionwall" from a file manager: set the wallpaper quietly, no window
+        return open_files(args.files)
     if args.command == "gui":
         from .ui.app import main as gui_main
-        return gui_main(getattr(args, "files", []) or [])
+        return gui_main()
 
     from gi.repository import GLib
     from .client import DaemonClient
