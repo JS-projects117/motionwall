@@ -148,6 +148,7 @@ export default class MotionwallExtension extends Extension {
         this._debounceId = 0;
         this._idleWatchId = 0;
         this._activeWatchId = 0;
+        this._hiddenActors = new Map();
 
         this._mpvMissing = !this._mpv;
         if (this._mpvMissing)
@@ -187,6 +188,16 @@ export default class MotionwallExtension extends Extension {
         this._signals = [];
 
         this._stopPlayers();
+
+        for (const [actor, id] of this._hiddenActors) {
+            try {
+                actor.disconnect(id);
+                actor.show();
+            } catch (e) {
+                void e;
+            }
+        }
+        this._hiddenActors.clear();
 
         this._injections.clear();
         this._destroyWallpapers();
@@ -364,17 +375,25 @@ export default class MotionwallExtension extends Extension {
         const win = actor?.meta_window;
         if (!isMarkerWindow(win))
             return;
-        // Hidden actor => non-reactive (clicks never reach it) and out of the
-        // normal window layer; the Clone in the background keeps it visible.
+        // Hide the source actor: it leaves the normal window layer and, being
+        // unmapped, is non-reactive (clicks never reach it). A Clutter.Clone
+        // forces an unmapped source to keep painting at full opacity, so the
+        // video still shows in the background - do NOT touch opacity here.
         try {
             win.stick?.();
             actor.hide();
-            actor.opacity = 0;
+            if (!this._hiddenActors.has(actor)) {
+                const id = actor.connect('notify::visible', () => {
+                    if (actor.visible)
+                        actor.hide();      // re-hide if mutter ever re-shows it
+                });
+                this._hiddenActors.set(actor, id);
+                actor.connect('destroy', () => this._hiddenActors.delete(actor));
+            }
         } catch (e) {
             logError(e, 'motionwall: hide source failed');
         }
-        // A freshly appeared renderer: (re)attach clones.
-        this._reattachWallpapers();
+        this._reattachWallpapers();      // a fresh renderer appeared: attach clones
     }
 
     _reattachWallpapers() {
