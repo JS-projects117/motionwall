@@ -60,7 +60,8 @@ function mpvArgv(mpvPath, cfg, index, geometry, socketPath) {
         '--x11-name=motionwall',
         `--geometry=${geometry.width}x${geometry.height}+${geometry.x}+${geometry.y}`,
         `--autofit=${geometry.width}x${geometry.height}`,
-        '--gpu-context=x11',            // keep rendering while the window is hidden
+        '--gpu-context=x11egl',         // keep rendering while the window is hidden; legacy GLX 'x11'
+                                         // context is gone from mpv builds without --enable-x11-glx
         '--force-window=yes', '--idle=yes',
         '--no-border', '--ontop=no', '--fullscreen=no',
         `--input-ipc-server=${socketPath}`,
@@ -91,14 +92,39 @@ export function findMpv() {
     return system || null;
 }
 
+// GNOME Shell's own process environment is captured at login, before Xwayland
+// is up, so it has no DISPLAY/XAUTHORITY - a child spawned with GLib.get_environ()
+// can't connect to X. systemd --user's activation environment is updated once
+// Xwayland is ready and is the only reliable place to read those from in-process.
+function systemdActivationEnv() {
+    try {
+        const reply = Gio.DBus.session.call_sync(
+            'org.freedesktop.systemd1', '/org/freedesktop/systemd1',
+            'org.freedesktop.DBus.Properties', 'Get',
+            new GLib.Variant('(ss)', ['org.freedesktop.systemd1.Manager', 'Environment']),
+            null, Gio.DBusCallFlags.NONE, -1, null);
+        return reply.deep_unpack()[0].deep_unpack();
+    } catch {
+        return [];
+    }
+}
+
 function mpvEnv(mpvPath) {
-    const env = GLib.get_environ();
+    let env = GLib.get_environ();
+    if (!GLib.environ_getenv(env, 'DISPLAY')) {
+        const activation = systemdActivationEnv();
+        for (const key of ['DISPLAY', 'XAUTHORITY']) {
+            const value = GLib.environ_getenv(activation, key);
+            if (value)
+                env = GLib.environ_setenv(env, key, value, true);
+        }
+    }
     if (mpvPath.includes('/motionwall/runtime/')) {
         const lib = GLib.build_filenamev([
             GLib.get_user_data_dir(), 'motionwall', 'runtime', 'usr', 'lib', 'x86_64-linux-gnu',
         ]);
         const prev = GLib.environ_getenv(env, 'LD_LIBRARY_PATH');
-        return GLib.environ_setenv(env, 'LD_LIBRARY_PATH', prev ? `${lib}:${prev}` : lib, true);
+        env = GLib.environ_setenv(env, 'LD_LIBRARY_PATH', prev ? `${lib}:${prev}` : lib, true);
     }
     return env;
 }
