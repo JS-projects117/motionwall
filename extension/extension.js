@@ -6,9 +6,12 @@
 //     window, so the live video appears in the real background layer - behind
 //     every window, non-interactive, and visible through the overview;
 //   * the source mpv windows are hidden from the window list, overview, tab
-//     list and app tracker, and their actors are hidden (a hidden actor is
-//     non-reactive, so clicks never reach the video) while the clone keeps
-//     painting the live texture.
+//     list and app tracker, and made click-through via an empty X11 input
+//     shape (see player.js) - they stay mapped and visible so Mutter keeps
+//     giving them full damage priority (a hidden/off-screen actor's content
+//     gets deprioritized, which stuttered even though mpv itself never
+//     dropped a frame); the clone is also force-redrawn every frame rather
+//     than trusting the source's damage events to propagate reliably.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -68,6 +71,7 @@ class LiveWallpaper extends St.Widget {
         this._clone = null;
         this._pollId = 0;
         this._sourceDestroyId = 0;
+        this._tickId = 0;
 
         backgroundActor.layout_manager = new Clutter.BinLayout();
         backgroundActor.add_child(this);
@@ -85,6 +89,10 @@ class LiveWallpaper extends St.Widget {
     }
 
     _dropClone() {
+        if (this._tickId) {
+            GLib.source_remove(this._tickId);
+            this._tickId = 0;
+        }
         if (this._clone) {
             if (this._sourceDestroyId && this._clone.source) {
                 this._clone.source.disconnect(this._sourceDestroyId);
@@ -121,6 +129,11 @@ class LiveWallpaper extends St.Widget {
                 if (!this._pollId)
                     this._apply();
             });
+            this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+                if (this._clone)
+                    this._clone.queue_redraw();
+                return GLib.SOURCE_CONTINUE;
+            });
             this.ease({opacity: 255, duration: 500, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
             this._pollId = 0;
             return false;
@@ -148,7 +161,6 @@ export default class MotionwallExtension extends Extension {
         this._debounceId = 0;
         this._idleWatchId = 0;
         this._activeWatchId = 0;
-        this._hiddenActors = new Map();
 
         this._mpvMissing = !this._mpv;
         if (this._mpvMissing)
@@ -188,16 +200,6 @@ export default class MotionwallExtension extends Extension {
         this._signals = [];
 
         this._stopPlayers();
-
-        for (const [actor, id] of this._hiddenActors) {
-            try {
-                actor.disconnect(id);
-                actor.show();
-            } catch (e) {
-                void e;
-            }
-        }
-        this._hiddenActors.clear();
 
         this._injections.clear();
         this._destroyWallpapers();
@@ -375,23 +377,13 @@ export default class MotionwallExtension extends Extension {
         const win = actor?.meta_window;
         if (!isMarkerWindow(win))
             return;
-        // Hide the source actor: it leaves the normal window layer and, being
-        // unmapped, is non-reactive (clicks never reach it). A Clutter.Clone
-        // forces an unmapped source to keep painting at full opacity, so the
-        // video still shows in the background - do NOT touch opacity here.
+        // Deliberately do NOT hide the source actor (see the header comment):
+        // player.js empties its X11 input shape instead, so it stays fully
+        // click-through while remaining mapped and visible.
         try {
             win.stick?.();
-            actor.hide();
-            if (!this._hiddenActors.has(actor)) {
-                const id = actor.connect('notify::visible', () => {
-                    if (actor.visible)
-                        actor.hide();      // re-hide if mutter ever re-shows it
-                });
-                this._hiddenActors.set(actor, id);
-                actor.connect('destroy', () => this._hiddenActors.delete(actor));
-            }
         } catch (e) {
-            logError(e, 'motionwall: hide source failed');
+            logError(e, 'motionwall: stick failed');
         }
         this._reattachWallpapers();      // a fresh renderer appeared: attach clones
     }

@@ -82,6 +82,65 @@ function mpvArgv(mpvPath, cfg, index, geometry, socketPath) {
     return argv;
 }
 
+// Empties the X11 input shape of the marker window so the pointer passes
+// straight through it (same technique as motionwall/xdesktop.py's X11-native
+// path). We keep the window mapped and visible instead of Clutter-hiding it -
+// see the comment in extension.js's _onWindowMapped for why - so it needs its
+// own click-through mechanism rather than relying on being non-reactive.
+const SHAPE_CLICKTHROUGH_PY = `
+import sys, time
+from Xlib import display
+from Xlib.ext import shape
+
+needle = sys.argv[1]
+
+def find(win):
+    try:
+        name = win.get_wm_name()
+    except Exception:
+        name = None
+    if name and needle in name:
+        return win
+    try:
+        children = win.query_tree().children
+    except Exception:
+        return None
+    for c in children:
+        found = find(c)
+        if found:
+            return found
+    return None
+
+d = display.Display()
+root = d.screen().root
+for _ in range(100):
+    win = find(root)
+    if win:
+        try:
+            win.shape_rectangles(shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
+            d.sync()
+        except Exception:
+            pass
+        break
+    time.sleep(0.1)
+`;
+
+function shapeClickThrough(title, env) {
+    try {
+        const launcher = new Gio.SubprocessLauncher({
+            flags: Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE,
+        });
+        for (const kv of env) {
+            const eq = kv.indexOf('=');
+            if (eq > 0)
+                launcher.setenv(kv.slice(0, eq), kv.slice(eq + 1), true);
+        }
+        launcher.spawnv(['python3', '-c', SHAPE_CLICKTHROUGH_PY, title]);
+    } catch (e) {
+        void e;      // best-effort; window just stays non-click-through
+    }
+}
+
 export function findMpv() {
     const local = GLib.build_filenamev([
         GLib.get_user_data_dir(), 'motionwall', 'runtime', 'usr', 'bin', 'mpv',
@@ -160,6 +219,7 @@ export class MpvPlayer {
         }
         this.subprocess = launcher.spawnv(argv);
         this._paused = false;
+        shapeClickThrough(`${WINDOW_MARKER}:${this.index}`, mpvEnv(this.mpvPath));
     }
 
     stop() {
