@@ -1,10 +1,11 @@
 // Config reading and mpv process management for the Motionwall extension.
 //
-// One mpv process is spawned per monitor. mpv runs on Xwayland (X11 backend) so
-// it keeps producing frames even while its window is hidden - a native Wayland
-// mpv throttles to frame callbacks and would freeze once we hide the source
-// window. Each window carries WINDOW_MARKER:<index> in its title so the shell
-// side can find, hide and clone it. Pause is driven over mpv's JSON IPC socket.
+// One mpv process is spawned per monitor. mpv runs on Xwayland (X11 backend);
+// its window is turned into a click-through, monitor-sized desktop-layer window
+// (see prepareWindow) that stays mapped and visible, and the shell side clones
+// it into each monitor's background. Each window carries WINDOW_MARKER:<index>
+// in its title so the shell side can find and clone it. Pause is driven over
+// mpv's JSON IPC socket.
 
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
@@ -62,7 +63,15 @@ function mpvArgv(mpvPath, cfg, index, geometry, socketPath) {
         `--autofit=${geometry.width}x${geometry.height}`,
         '--gpu-context=x11egl',         // keep rendering while the window is hidden; legacy GLX 'x11'
                                          // context is gone from mpv builds without --enable-x11-glx
+        // Don't block in eglSwapBuffers waiting for Xwayland's present completion:
+        // through Xwayland on NVIDIA that completion is erratic (measured ~13 ms
+        // vsync jitter at 60 Hz), and it stops entirely while Mutter withholds
+        // frame callbacks. Frames are paced by the audio/PTS clock instead and
+        // pushed the moment they are due; the shell samples them at its own rate.
+        '--opengl-swapinterval=0',
         '--force-window=yes', '--idle=yes',
+        '--auto-window-resize=no',      // never resize the window on (re)load: prepareWindow()
+                                         // sizes it to the monitor and mpv must not undo that
         '--no-border', '--ontop=no', '--fullscreen=no',
         `--input-ipc-server=${socketPath}`,
         cfg.loop ? '--loop-file=inf' : '--loop-file=no',
@@ -82,25 +91,38 @@ function mpvArgv(mpvPath, cfg, index, geometry, socketPath) {
     return argv;
 }
 
-// Empties the X11 input shape of the marker window so the pointer passes
-// straight through it (same technique as motionwall/xdesktop.py's X11-native
-// path). We keep the window mapped and visible instead of Clutter-hiding it -
-// see the comment in extension.js's _onWindowMapped for why - so it needs its
-// own click-through mechanism rather than relying on being non-reactive.
-const SHAPE_CLICKTHROUGH_PY = `
+// Prepares the marker window on the X11 side once mpv has mapped it:
+//   * empties its input shape so the pointer passes straight through (same
+//     technique as motionwall/xdesktop.py's X11-native path) - we keep the
+//     window mapped and visible instead of Clutter-hiding it (see the comment
+//     in extension.js's _onWindowMapped), so it needs its own click-through
+//     mechanism rather than relying on being non-reactive;
+//   * turns it into a _NET_WM_WINDOW_TYPE_DESKTOP window, which Mutter stacks
+//     in the desktop layer under every normal window (including the desktop
+//     icons window) and never focuses;
+//   * moves/resizes it to cover exactly its monitor in X coordinates. With
+//     xwayland-native-scaling the X screen is an integer multiple of the
+//     logical size, so the scale is derived from root width / stage width.
+// The visible source window then coincides pixel-for-pixel with the clone
+// in the background layer instead of showing up as a smaller copy on top.
+const PREPARE_WINDOW_PY = `
 import sys, time
-from Xlib import display
+from Xlib import display, X, Xatom
 from Xlib.ext import shape
+from Xlib.protocol import event
 
 needle = sys.argv[1]
+mx, my, mw, mh, stage_w = (float(v) for v in sys.argv[2:7])
 
 def find(win):
     try:
         name = win.get_wm_name()
+        # Mutter's frame windows copy the client's title but carry no
+        # WM_CLASS; only the client window has one.
+        if name and needle in name and win.get_wm_class():
+            return win
     except Exception:
-        name = None
-    if name and needle in name:
-        return win
+        pass
     try:
         children = win.query_tree().children
     except Exception:
@@ -112,20 +134,49 @@ def find(win):
     return None
 
 d = display.Display()
-root = d.screen().root
+screen = d.screen()
+root = screen.root
+scale = screen.width_in_pixels / stage_w if stage_w > 0 else 1.0
+geo = [int(round(v * scale)) for v in (mx, my, mw, mh)]
 for _ in range(100):
     win = find(root)
     if win:
         try:
             win.shape_rectangles(shape.SO.Set, shape.SK.Input, 0, 0, 0, [])
-            d.sync()
         except Exception:
             pass
+        try:
+            atom = d.intern_atom
+            win.change_property(atom('_NET_WM_WINDOW_TYPE'), Xatom.ATOM, 32,
+                                [atom('_NET_WM_WINDOW_TYPE_DESKTOP')])
+            msg = event.ClientMessage(window=win, client_type=atom('_NET_WM_STATE'),
+                                      data=(32, [1, atom('_NET_WM_STATE_SKIP_TASKBAR'),
+                                                 atom('_NET_WM_STATE_SKIP_PAGER'), 1, 0]))
+            root.send_event(msg, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+            msg = event.ClientMessage(window=win, client_type=atom('_NET_WM_STATE'),
+                                      data=(32, [1, atom('_NET_WM_STATE_BELOW'), 0, 1, 0]))
+            root.send_event(msg, event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask)
+        except Exception:
+            pass
+        d.sync()
+        # Both Mutter (re-placing the window after the type change) and mpv
+        # (applying --geometry again once the file is loaded) can undo the
+        # resize, so keep re-asserting the geometry for a few seconds.
+        want = (geo[0], geo[1], max(geo[2], 1), max(geo[3], 1))
+        for _ in range(80):
+            try:
+                g = win.get_geometry()
+                if (g.x, g.y, g.width, g.height) != want:
+                    win.configure(x=want[0], y=want[1], width=want[2], height=want[3])
+                    d.sync()
+            except Exception:
+                break
+            time.sleep(0.1)
         break
     time.sleep(0.1)
 `;
 
-function shapeClickThrough(title, env) {
+function prepareWindow(title, geometry, stageWidth, env) {
     try {
         const launcher = new Gio.SubprocessLauncher({
             flags: Gio.SubprocessFlags.STDOUT_SILENCE | Gio.SubprocessFlags.STDERR_SILENCE,
@@ -135,9 +186,11 @@ function shapeClickThrough(title, env) {
             if (eq > 0)
                 launcher.setenv(kv.slice(0, eq), kv.slice(eq + 1), true);
         }
-        launcher.spawnv(['python3', '-c', SHAPE_CLICKTHROUGH_PY, title]);
+        launcher.spawnv(['python3', '-c', PREPARE_WINDOW_PY, title,
+            String(geometry.x), String(geometry.y),
+            String(geometry.width), String(geometry.height), String(stageWidth)]);
     } catch (e) {
-        void e;      // best-effort; window just stays non-click-through
+        void e;      // best-effort; window just stays a normal, non-click-through one
     }
 }
 
@@ -189,9 +242,10 @@ function mpvEnv(mpvPath) {
 }
 
 export class MpvPlayer {
-    constructor(index, geometry, mpvPath, log) {
+    constructor(index, geometry, mpvPath, log, stageWidth = 0) {
         this.index = index;
         this.geometry = geometry;
+        this.stageWidth = stageWidth;
         this.mpvPath = mpvPath;
         this.log = log;
         this.subprocess = null;
@@ -219,7 +273,8 @@ export class MpvPlayer {
         }
         this.subprocess = launcher.spawnv(argv);
         this._paused = false;
-        shapeClickThrough(`${WINDOW_MARKER}:${this.index}`, mpvEnv(this.mpvPath));
+        prepareWindow(`${WINDOW_MARKER}:${this.index}`, this.geometry, this.stageWidth,
+            mpvEnv(this.mpvPath));
     }
 
     stop() {

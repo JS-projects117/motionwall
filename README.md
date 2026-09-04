@@ -17,6 +17,30 @@ look great while costing almost nothing.
 
 ## Install
 
+### From the package (Ubuntu / Debian)
+
+Grab `motionwall_<version>_all.deb` from the releases page (or build it, see
+below) and install it like any other app - double-click it, or:
+
+```bash
+sudo apt install ./motionwall_0.1.0_all.deb
+```
+
+Dependencies (mpv, GTK4, libadwaita, python3-xlib, ffmpeg) are pulled in by apt.
+Then open **Motionwall** from the app grid, pick a video, and log out and back in
+once: the first run enables the bundled GNOME Shell extension for your user, and
+GNOME on Wayland only loads extensions at login. After that everything is live.
+Remove it with `sudo apt remove motionwall` (your videos, library and settings in
+`~/.config/motionwall` stay).
+
+To build the package from a checkout you only need `dpkg-deb` (part of dpkg):
+
+```bash
+scripts/build-deb.sh          # -> dist/motionwall_<version>_all.deb
+```
+
+### From source, no root
+
 ```bash
 git clone <this repo> motionwall && cd motionwall
 sudo apt install mpv python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-xlib ffmpeg

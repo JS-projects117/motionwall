@@ -47,11 +47,12 @@ exec python3 "$APPDIR/bin/motionwall" "\$@"
 EOL
 chmod +x "$LAUNCHER"
 
-mkdir -p "$DATA/applications" "$DATA/dbus-1/services" "$DATA/icons/hicolor/scalable/apps"
+mkdir -p "$DATA/applications" "$DATA/dbus-1/services" "$DATA/icons/hicolor/scalable/apps" "$DATA/metainfo"
 LAUNCHER_ESC="$(printf '%s' "$LAUNCHER" | sed 's/[&|\\]/\\&/g')"
 sed "s|@LAUNCHER@|$LAUNCHER_ESC|g" "$HERE/data/org.motionwall.Motionwall.desktop" > "$DATA/applications/org.motionwall.Motionwall.desktop"
 sed "s|@LAUNCHER@|$LAUNCHER_ESC|g" "$HERE/data/org.motionwall.Daemon.service" > "$DATA/dbus-1/services/org.motionwall.Daemon.service"
 cp "$HERE/data/org.motionwall.Motionwall.svg" "$DATA/icons/hicolor/scalable/apps/"
+cp "$HERE/data/org.motionwall.Motionwall.metainfo.xml" "$DATA/metainfo/"
 command -v update-desktop-database >/dev/null && update-desktop-database "$DATA/applications" 2>/dev/null || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" 2>/dev/null || true
 # make dbus-daemon notice the new activation file

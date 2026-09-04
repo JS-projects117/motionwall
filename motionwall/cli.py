@@ -96,8 +96,15 @@ def open_files(files: List[str], quiet: bool = True) -> int:
         library.add(video)
     control.apply_state(video=videos[0], enabled=True, paused=False)
     st = control.status()
-    if st["backend"] == "none" and quiet:
-        notify("Motionwall", "Saved. Enable the Motionwall extension (log out and back in) to see it.")
+    if st["backend"] == "none":
+        from . import extension
+        msg = ("Saved. Log out and back in once to finish setting up the wallpaper."
+               if extension.ensure_enabled() or extension.is_enabled()
+               else "Saved. Enable the Motionwall extension (log out and back in) to see it.")
+        if quiet:
+            notify("Motionwall", msg)
+        else:
+            print(f"motionwall: {msg}")
     elif quiet:
         notify("Motionwall", f"{os.path.basename(videos[0])} is now your wallpaper.")
     return 0
@@ -111,6 +118,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "gui":
         if getattr(args, "files", None):
             return open_files(args.files, quiet=True)
+        from . import extension
+        extension.ensure_enabled()      # first run after a system-wide install
         from .ui.app import main as gui_main
         return gui_main()
 

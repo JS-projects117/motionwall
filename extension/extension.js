@@ -43,6 +43,10 @@ const IFACE_XML = `
   </interface>
 </node>`;
 
+// Set by the extension whenever the mpv renderers are paused; the clone's
+// force-redraw tick stops while true.
+let renderersPaused = false;
+
 function isMarkerWindow(win) {
     return !!win?.title?.includes(WINDOW_MARKER);
 }
@@ -130,7 +134,8 @@ class LiveWallpaper extends St.Widget {
                     this._apply();
             });
             this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
-                if (this._clone)
+                // No point repainting a frozen frame at 60 Hz while paused.
+                if (this._clone && !renderersPaused)
                     this._clone.queue_redraw();
                 return GLib.SOURCE_CONTINUE;
             });
@@ -253,7 +258,7 @@ export default class MotionwallExtension extends Extension {
         const monitors = Main.layoutManager.monitors;
         this._players = monitors.map((mon, i) => {
             const player = new MpvPlayer(i, {x: mon.x, y: mon.y, width: mon.width, height: mon.height},
-                this._mpv, m => this.log(m));
+                this._mpv, m => this.log(m), global.stage.width);
             player.start(this._config);
             return player;
         });
@@ -270,6 +275,7 @@ export default class MotionwallExtension extends Extension {
     }
 
     _setPaused(paused) {
+        renderersPaused = paused;
         for (const p of this._players)
             p.setPaused(paused);
     }

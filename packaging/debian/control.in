@@ -1,0 +1,19 @@
+Package: motionwall
+Version: @VERSION@
+Section: x11
+Priority: optional
+Architecture: all
+Maintainer: @MAINTAINER@
+Installed-Size: @SIZE@
+Depends: python3 (>= 3.10), python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, gir1.2-glib-2.0, python3-xlib, mpv, ffmpeg
+Recommends: gnome-shell (>= 45)
+Description: animated video wallpaper for GNOME
+ Motionwall plays any video file (MP4, MKV, WebM, MOV, GIF) as the desktop
+ background. On GNOME Wayland a bundled GNOME Shell extension renders the video
+ in the desktop's own background layer, behind every window and the desktop
+ icons; on Xorg a lightweight daemon does the same with desktop-layer windows.
+ .
+ Video is decoded on the GPU. Playback pauses automatically when the screen is
+ locked, the user is idle, the machine is on battery or a full-screen
+ application is in front. Ships a GTK4/libadwaita settings window, a command
+ line interface and a D-Bus API.

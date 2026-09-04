@@ -15,6 +15,7 @@ rm -rf "$DATA/motionwall/app"
 rm -f "$LAUNCHER" "$DATA/applications/org.motionwall.Motionwall.desktop" \
       "$DATA/dbus-1/services/org.motionwall.Daemon.service" \
       "$DATA/icons/hicolor/scalable/apps/org.motionwall.Motionwall.svg" \
+      "$DATA/metainfo/org.motionwall.Motionwall.metainfo.xml" \
       "$CONF/autostart/motionwall-daemon.desktop"
 if [ "${1:-}" = "--purge" ]; then
   rm -rf "$DATA/motionwall" "$CONF/motionwall" "$CACHE/motionwall"

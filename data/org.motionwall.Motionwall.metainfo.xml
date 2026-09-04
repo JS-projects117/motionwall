@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.motionwall.Motionwall</id>
+  <name>Motionwall</name>
+  <summary>Use a video as your desktop wallpaper</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <developer id="org.motionwall">
+    <name>Joseph Sanchez</name>
+  </developer>
+  <description>
+    <p>
+      Motionwall plays any video file (MP4, MKV, WebM, MOV, GIF) as an animated
+      desktop background on GNOME. On Wayland a bundled GNOME Shell extension
+      draws the video in the desktop's own background layer, behind every window
+      and the desktop icons; on Xorg a small daemon does the same with
+      desktop-layer windows.
+    </p>
+    <p>
+      Video is decoded on the GPU, and playback pauses automatically whenever
+      nobody would see it: screen locked, user idle, on battery, or a full-screen
+      application in front. A settings window manages a library of videos,
+      scaling, speed, sound and the power-saving rules; a command line and D-Bus
+      API are included.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.motionwall.Motionwall.desktop</launchable>
+  <provides>
+    <binary>motionwall</binary>
+  </provides>
+  <categories>
+    <category>Settings</category>
+    <category>DesktopSettings</category>
+  </categories>
+  <keywords>
+    <keyword>wallpaper</keyword>
+    <keyword>video</keyword>
+    <keyword>animated</keyword>
+    <keyword>live</keyword>
+    <keyword>background</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-09-03">
+      <description>
+        <p>First packaged release.</p>
+      </description>
+    </release>
+  </releases>
+</component>
