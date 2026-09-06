@@ -51,6 +51,28 @@ def scaling_args(mode: str) -> List[str]:
     return ["--keepaspect=yes", "--panscan=1.0"]  # fill (crop to cover)
 
 
+def appearance_properties(cfg: Config) -> Dict[str, Any]:
+    """mpv property -> value for the appearance settings (all settable while playing).
+
+    Keep in sync with appearanceProps() in extension/player.js.
+    """
+    return {
+        "brightness": int(cfg.brightness),
+        "contrast": int(cfg.contrast),
+        "saturation": int(cfg.saturation),
+        "gamma": int(cfg.gamma),
+        "hue": int(cfg.hue),
+        "video-zoom": round(cfg.zoom / 100.0, 3),
+        "video-align-x": round(cfg.align_x / 100.0, 3),
+        "video-align-y": round(cfg.align_y / 100.0, 3),
+        "video-rotate": int(cfg.rotate),
+    }
+
+
+def appearance_args(cfg: Config) -> List[str]:
+    return [f"--{name}={value}" for name, value in appearance_properties(cfg).items()]
+
+
 def build_mpv_args(mpv: str, cfg: Config, wid: int, socket_path: str, video: Optional[str]) -> List[str]:
     quality = cfg.extra.get("quality", "fast")
     args = [mpv, "--no-config"]
@@ -75,6 +97,7 @@ def build_mpv_args(mpv: str, cfg: Config, wid: int, socket_path: str, video: Opt
         "--cache=no", "--demuxer-readahead-secs=1", "--demuxer-max-bytes=32MiB",
     ]
     args += scaling_args(cfg.scaling)
+    args += appearance_args(cfg)
     extra = cfg.extra.get("mpv_args")
     if isinstance(extra, list):
         args += [str(a) for a in extra]
@@ -383,6 +406,8 @@ class Engine:
                 self._safe(p, "set_property", "panscan", 1.0 if cfg.scaling == "fill" else 0.0)
             if not cfg.mute:
                 self._safe(p, "set_property", "volume", cfg.volume)
+            for name, value in appearance_properties(cfg).items():
+                self._safe(p, "set_property", name, value)
 
     def needs_restart(self, old: Config, new: Config) -> bool:
         return (old.mute != new.mute or old.hwdec != new.hwdec or old.monitors != new.monitors

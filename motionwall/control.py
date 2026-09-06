@@ -11,7 +11,9 @@ This lets `motionwall set ...`, the "Open with" launcher and the GUI all work
 whether the wallpaper is drawn by the extension or the daemon.
 """
 
+import glob
 import os
+import tempfile
 from typing import Any, Dict, Optional
 
 from gi.repository import Gio, GLib
@@ -66,22 +68,69 @@ def apply_state(**changes: Any) -> config_mod.Config:
     return cfg
 
 
-def notify() -> None:
+def notify(restart: bool = False) -> None:
+    """Tell the active renderer the config changed.
+
+    The extension re-reads the file and applies what it can live; restart=True
+    forces it to respawn its players (the GUI's "Reload Wallpaper" action).
+    """
     bus = _bus()
     if not bus:
         return
     if _name_has_owner(bus, SHELL_BUS_NAME):
-        try:
-            bus.call_sync(SHELL_BUS_NAME, SHELL_OBJECT_PATH, SHELL_INTERFACE, "Reload", None, None,
-                          Gio.DBusCallFlags.NONE, 2000, None)
-        except GLib.Error:
-            pass  # extension not loaded; the file monitor will catch the change
+        for method in (("Restart", "Reload") if restart else ("Reload",)):
+            try:
+                bus.call_sync(SHELL_BUS_NAME, SHELL_OBJECT_PATH, SHELL_INTERFACE, method, None, None,
+                              Gio.DBusCallFlags.NONE, 2000, None)
+                break
+            except GLib.Error:
+                continue  # older extension without Restart, or not loaded: the file monitor catches it
     if daemon_present(bus):
         try:
             bus.call_sync(DAEMON_BUS_NAME, DAEMON_OBJECT_PATH, DAEMON_INTERFACE, "ReloadConfig", None, None,
                           Gio.DBusCallFlags.NONE, 5000, None)
         except GLib.Error:
             pass
+
+
+def extension_sockets() -> list:
+    """IPC sockets of the mpv players the GNOME Shell extension is running."""
+    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return sorted(glob.glob(os.path.join(base, "motionwall-ext-mpv-*.sock")))
+
+
+def apply_appearance(cfg: Optional[config_mod.Config] = None) -> int:
+    """Push the appearance settings straight into the running players.
+
+    The config file stays the source of truth (the renderer applies it on every
+    start), but a slider should move the wallpaper instantly, so the settings
+    are also set over mpv's IPC here. Returns the number of players updated.
+    """
+    from .engine import MpvIpc, appearance_properties
+    cfg = cfg or config_mod.load()
+    props = appearance_properties(cfg)
+    updated = 0
+    for path in extension_sockets():
+        ipc = MpvIpc(path)
+        if not ipc.connect(timeout=0.3):
+            continue
+        try:
+            for name, value in props.items():
+                ipc.command("set_property", name, value)
+            updated += 1
+        except (OSError, RuntimeError, TimeoutError):
+            pass
+        finally:
+            ipc.close()
+    bus = _bus()
+    if bus and daemon_present(bus):
+        try:
+            bus.call_sync(DAEMON_BUS_NAME, DAEMON_OBJECT_PATH, DAEMON_INTERFACE, "ReloadConfig", None, None,
+                          Gio.DBusCallFlags.NONE, 5000, None)
+            updated += 1
+        except GLib.Error:
+            pass
+    return updated
 
 
 def status() -> Dict[str, Any]:

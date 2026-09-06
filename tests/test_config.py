@@ -45,6 +45,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.speed, 1.5)
         self.assertFalse(cfg.loop)
 
+    def test_appearance_defaults_and_clamping(self):
+        cfg = config.Config()
+        self.assertEqual(cfg.appearance(), {k: 0 for k in config.APPEARANCE_KEYS})
+        cfg = config.Config.from_dict({"brightness": 250, "hue": "-300", "zoom": 40.7, "rotate": 450})
+        self.assertEqual(cfg.brightness, 100)
+        self.assertEqual(cfg.hue, -100)
+        self.assertEqual(cfg.zoom, 40)
+        self.assertEqual(cfg.rotate, 90)
+        cfg = config.Config.from_dict({"rotate": 100})     # snaps to the nearest quarter turn
+        self.assertEqual(cfg.rotate, 90)
+        cfg.reset_appearance()
+        self.assertEqual(cfg.rotate, 0)
+
     def test_missing_or_corrupt_file_gives_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "config.json"

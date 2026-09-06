@@ -14,10 +14,11 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from .. import APP_ID, __version__, autostart, config, library  # noqa: E402
 from .. import control  # noqa: E402
-from ..config import HWDEC_MODES, SCALING_MODES  # noqa: E402
+from ..config import APPEARANCE_KEYS, HWDEC_MODES, ROTATIONS, SCALING_MODES  # noqa: E402
 
 REFRESH_MS = 2000
 SETTING_DEBOUNCE_MS = 300
+APPEARANCE_DEBOUNCE_MS = 80     # sliders push straight to the players; keep it snappy
 
 SCALING_LABELS = {"fill": "Fill (crop to cover)", "fit": "Fit (letterbox)", "stretch": "Stretch"}
 HWDEC_LABELS = {"auto-safe": "Automatic (recommended)", "auto": "Automatic (all methods)", "nvdec": "NVIDIA NVDEC",
@@ -32,6 +33,7 @@ CSS = """
 .library-item:hover { background: alpha(currentColor, 0.06); }
 .library-item.active { background: alpha(@accent_bg_color, 0.18); }
 .stat { font-family: monospace; font-size: 0.9em; }
+.appearance-scale { min-width: 240px; }
 """
 
 
@@ -181,6 +183,8 @@ class MainWindow(Adw.ApplicationWindow):
         display.add(self.speed_row)
         page.append(display)
 
+        page.append(self._build_appearance())
+
         audio = Adw.PreferencesGroup(title="Audio")
         self.mute_row = Adw.SwitchRow(title="Mute", subtitle="Recommended - the audio track is not even decoded",
                                       active=cfg.mute)
@@ -228,6 +232,71 @@ class MainWindow(Adw.ApplicationWindow):
         page.append(startup)
         return page
 
+    def _build_appearance(self) -> Gtk.Widget:
+        cfg = self.cfg
+        group = Adw.PreferencesGroup(title="Appearance",
+                                     description="Changes show on the wallpaper as you drag")
+        reset = Gtk.Button(label="Reset", valign=Gtk.Align.CENTER, tooltip_text="Back to the video as encoded")
+        reset.connect("clicked", lambda *_: self._reset_appearance())
+        group.set_header_suffix(reset)
+        self.appearance_scales: Dict[str, Gtk.Scale] = {}
+        for key, title, subtitle in (
+            ("brightness", "Brightness", None),
+            ("contrast", "Contrast", None),
+            ("saturation", "Saturation", "-100 is black and white"),
+            ("gamma", "Gamma", "Lifts or deepens the mid-tones"),
+            ("hue", "Hue", "Shifts every colour around the wheel"),
+            ("zoom", "Zoom", "100 doubles the size; negative zooms out"),
+            ("align_x", "Horizontal position", "Which part stays in view when the video is cropped"),
+            ("align_y", "Vertical position", None),
+        ):
+            self.appearance_scales[key] = self._slider(group, title, subtitle, key, getattr(cfg, key))
+        self.rotate_row = Adw.ComboRow(title="Rotation")
+        self.rotate_row.set_model(Gtk.StringList.new([f"{r}°" for r in ROTATIONS]))
+        self.rotate_row.set_selected(ROTATIONS.index(cfg.rotate) if cfg.rotate in ROTATIONS else 0)
+        self.rotate_row.connect("notify::selected",
+                                lambda r, _: self._set_appearance("rotate", ROTATIONS[r.get_selected()]))
+        group.add(self.rotate_row)
+        return group
+
+    def _slider(self, group, title, subtitle, key, value) -> Gtk.Scale:
+        row = Adw.ActionRow(title=title)
+        if subtitle:
+            row.set_subtitle(subtitle)
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -100, 100, 1)
+        scale.set_value(value)
+        scale.set_draw_value(True)
+        scale.set_value_pos(Gtk.PositionType.RIGHT)
+        scale.set_digits(0)
+        scale.set_has_origin(False)
+        scale.set_valign(Gtk.Align.CENTER)
+        scale.add_mark(0, Gtk.PositionType.BOTTOM, None)
+        scale.add_css_class("appearance-scale")
+        scale.connect("value-changed", lambda sc: self._set_debounced(key, int(round(sc.get_value())),
+                                                                       appearance=True))
+        row.add_suffix(scale)
+        row.set_activatable_widget(scale)
+        group.add(row)
+        return scale
+
+    def _set_appearance(self, key: str, value: int):
+        self._set(key, value, appearance=True)
+
+    def _reset_appearance(self):
+        self._updating = True
+        try:
+            for key, scale in self.appearance_scales.items():
+                scale.set_value(0)
+            self.rotate_row.set_selected(0)
+        finally:
+            self._updating = False
+        for key in self._pending.keys() & set(APPEARANCE_KEYS):
+            GLib.source_remove(self._pending.pop(key))
+        self.cfg = config.load()
+        self.cfg.reset_appearance()
+        config.save(self.cfg)
+        control.apply_appearance(self.cfg)
+
     def _combo(self, group, title, subtitle, values, labels, current, key, extra=False):
         row = Adw.ComboRow(title=title, subtitle=subtitle)
         row.set_model(Gtk.StringList.new([labels[v] for v in values]))
@@ -245,7 +314,7 @@ class MainWindow(Adw.ApplicationWindow):
         return row
 
     # -- settings ---------------------------------------------------------------
-    def _set(self, key: str, value, extra: bool = False):
+    def _set(self, key: str, value, extra: bool = False, appearance: bool = False):
         if self._updating:
             return
         # The daemon also writes the config (video, enabled): always merge into a fresh copy
@@ -260,9 +329,14 @@ class MainWindow(Adw.ApplicationWindow):
                 return
             setattr(self.cfg, key, value)
         config.save(self.cfg)
-        control.notify()
+        if appearance:
+            # Straight into the running players for instant feedback; the renderer
+            # also picks the saved value up on its next (re)start.
+            control.apply_appearance(self.cfg)
+        else:
+            control.notify()
 
-    def _set_debounced(self, key: str, value, extra: bool = False):
+    def _set_debounced(self, key: str, value, extra: bool = False, appearance: bool = False):
         if self._updating:
             return
         if key in self._pending:
@@ -270,9 +344,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         def flush():
             self._pending.pop(key, None)
-            self._set(key, value, extra)
+            self._set(key, value, extra, appearance)
             return False
-        self._pending[key] = GLib.timeout_add(SETTING_DEBOUNCE_MS, flush)
+        delay = APPEARANCE_DEBOUNCE_MS if appearance else SETTING_DEBOUNCE_MS
+        self._pending[key] = GLib.timeout_add(delay, flush)
 
     def _on_autostart(self, row, _):
         if self._updating:
@@ -493,7 +568,7 @@ class MotionwallApp(Adw.Application):
             GLib.timeout_add(500, self.window._refresh)
 
     def _reload(self, *_):
-        control.notify()
+        control.notify(restart=True)
         if self.window:
             GLib.timeout_add(300, self.window._refresh)
 

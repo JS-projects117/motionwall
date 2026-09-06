@@ -27,7 +27,20 @@ const DEFAULTS = {
     pause_on_idle: true,
     idle_minutes: 5,
     pause_on_battery: true,
+    // appearance (see motionwall/config.py); -100..100 except rotate (degrees)
+    brightness: 0,
+    contrast: 0,
+    saturation: 0,
+    gamma: 0,
+    hue: 0,
+    zoom: 0,
+    align_x: 0,
+    align_y: 0,
+    rotate: 0,
 };
+
+export const APPEARANCE_KEYS = ['brightness', 'contrast', 'saturation', 'gamma', 'hue',
+    'zoom', 'align_x', 'align_y', 'rotate'];
 
 export function readConfig() {
     const cfg = {...DEFAULTS};
@@ -52,6 +65,41 @@ function scalingArgs(mode) {
     if (mode === 'stretch')
         return ['--keepaspect=no'];
     return ['--keepaspect=yes', '--panscan=1.0'];   // fill
+}
+
+// mpv property -> value for the appearance settings; every one of these can be
+// set while playing. Keep in sync with appearance_properties() in motionwall/engine.py.
+export function appearanceProps(cfg) {
+    const clamp = v => Math.max(-100, Math.min(100, Math.round(Number(v) || 0)));
+    const rotate = ((Math.round(Number(cfg.rotate) || 0) % 360) + 360) % 360;
+    return {
+        'brightness': clamp(cfg.brightness),
+        'contrast': clamp(cfg.contrast),
+        'saturation': clamp(cfg.saturation),
+        'gamma': clamp(cfg.gamma),
+        'hue': clamp(cfg.hue),
+        'video-zoom': clamp(cfg.zoom) / 100,
+        'video-align-x': clamp(cfg.align_x) / 100,
+        'video-align-y': clamp(cfg.align_y) / 100,
+        'video-rotate': [0, 90, 180, 270].includes(rotate) ? rotate : 0,
+    };
+}
+
+// Settings mpv can take live over IPC (no respawn): scaling, speed, loop,
+// volume and the appearance properties.
+export function liveProps(cfg) {
+    const props = appearanceProps(cfg);
+    props.speed = Number(cfg.speed) || 1;
+    props['loop-file'] = cfg.loop ? 'inf' : 'no';
+    if (cfg.scaling === 'stretch') {
+        props.keepaspect = false;
+    } else {
+        props.keepaspect = true;
+        props.panscan = cfg.scaling === 'fill' ? 1.0 : 0.0;
+    }
+    if (!cfg.mute)
+        props.volume = Math.round(Number(cfg.volume) || 0);
+    return props;
 }
 
 function mpvArgv(mpvPath, cfg, index, geometry, socketPath) {
@@ -85,6 +133,7 @@ function mpvArgv(mpvPath, cfg, index, geometry, socketPath) {
         '--background=color', '--background-color=#000000',
         '--cache=no', '--demuxer-readahead-secs=1', '--demuxer-max-bytes=32MiB',
         ...scalingArgs(cfg.scaling),
+        ...Object.entries(appearanceProps(cfg)).map(([k, v]) => `--${k}=${v}`),
     ];
     if (cfg.video)
         argv.push(cfg.video);
@@ -305,8 +354,16 @@ export class MpvPlayer {
             this._ipc({command: ['loadfile', video, 'replace']});
     }
 
-    _ipc(payload) {
-        // Fire-and-forget one JSON command into mpv's IPC socket.
+    // Apply every live-settable setting from cfg without respawning mpv.
+    applyLive(cfg) {
+        if (!this.subprocess)
+            return;
+        this._ipc(...Object.entries(liveProps(cfg))
+            .map(([name, value]) => ({command: ['set_property', name, value]})));
+    }
+
+    _ipc(...payloads) {
+        // Fire-and-forget JSON command(s) into mpv's IPC socket.
         try {
             const addr = Gio.UnixSocketAddress.new(this.socketPath);
             const client = new Gio.SocketClient();
@@ -314,7 +371,7 @@ export class MpvPlayer {
                 try {
                     const conn = obj.connect_finish(res);
                     const out = conn.get_output_stream();
-                    out.write_all(`${JSON.stringify(payload)}\n`, null);
+                    out.write_all(payloads.map(p => `${JSON.stringify(p)}\n`).join(''), null);
                     conn.close_async(GLib.PRIORITY_DEFAULT, null, null);
                 } catch (e) {
                     void e;      // mpv may not have opened the socket yet

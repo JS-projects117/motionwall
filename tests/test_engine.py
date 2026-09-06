@@ -41,6 +41,20 @@ class ArgTests(unittest.TestCase):
         self.assertIn("--gpu-api=opengl", args)
         self.assertNotEqual(args[-1], None)
 
+    def test_appearance_args_and_properties(self):
+        cfg = Config(brightness=10, saturation=-100, zoom=50, align_x=-25, rotate=180)
+        props = engine.appearance_properties(cfg)
+        self.assertEqual(props["brightness"], 10)
+        self.assertEqual(props["saturation"], -100)
+        self.assertEqual(props["video-zoom"], 0.5)
+        self.assertEqual(props["video-align-x"], -0.25)
+        self.assertEqual(props["video-rotate"], 180)
+        args = engine.build_mpv_args("mpv", cfg, 1, "s", "/v.mp4")
+        for flag in ("--brightness=10", "--saturation=-100", "--video-zoom=0.5", "--video-align-x=-0.25",
+                     "--video-rotate=180", "--contrast=0"):
+            self.assertIn(flag, args, flag)
+        self.assertEqual(args[-1], "/v.mp4")
+
     def test_backoff(self):
         self.assertEqual([engine.backoff_delay(i) for i in range(6)], [1, 2, 4, 8, 16, 30])
 

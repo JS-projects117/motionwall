@@ -31,7 +31,7 @@ import {
     WINDOW_MARKER, CONFIG_PATH, SHELL_OBJECT_PATH, SHELL_INTERFACE,
     RENDERER_POLL_MS, DEBOUNCE_MS,
 } from './constants.js';
-import {readConfig, findMpv, MpvPlayer} from './player.js';
+import {readConfig, findMpv, MpvPlayer, APPEARANCE_KEYS} from './player.js';
 
 const IFACE_XML = `
 <node>
@@ -40,6 +40,7 @@ const IFACE_XML = `
     <property name="Playing" type="b" access="read"/>
     <signal name="OccludedChanged"><arg type="b" name="occluded"/></signal>
     <method name="Reload"/>
+    <method name="Restart"/>
   </interface>
 </node>`;
 
@@ -242,7 +243,14 @@ export default class MotionwallExtension extends Extension {
         return this._playing;
     }
 
+    // Re-read the config and apply it: live where mpv allows it, respawning
+    // the players only for settings that need it (or if none are running).
     Reload() {
+        this._applyConfigChange(this._players.length === 0);
+    }
+
+    // Unconditionally respawn the players (GUI "Reload Wallpaper").
+    Restart() {
         this._config = readConfig();
         this._restartPlayers();
     }
@@ -510,21 +518,29 @@ export default class MotionwallExtension extends Extension {
     }
 
     _onConfigChanged() {
+        this._applyConfigChange(false);
+    }
+
+    _applyConfigChange(forceRestart) {
         const old = this._config;
-        this._config = readConfig();
-        const needRestart = old.video !== this._config.video
-            || old.enabled !== this._config.enabled
-            || old.scaling !== this._config.scaling
-            || old.hwdec !== this._config.hwdec
-            || old.mute !== this._config.mute
-            || old.speed !== this._config.speed
-            || old.loop !== this._config.loop;
-        if (old.idle_minutes !== this._config.idle_minutes
-            || old.pause_on_idle !== this._config.pause_on_idle)
+        const cfg = this._config = readConfig();
+        const needRestart = forceRestart
+            || old.video !== cfg.video
+            || old.enabled !== cfg.enabled
+            || old.hwdec !== cfg.hwdec
+            || old.mute !== cfg.mute;
+        if (old.idle_minutes !== cfg.idle_minutes || old.pause_on_idle !== cfg.pause_on_idle)
             this._armIdleWatch();
-        if (needRestart)
+        if (needRestart) {
             this._restartPlayers();
-        else
-            this._updatePolicy();
+            return;
+        }
+        const liveChanged = ['scaling', 'speed', 'loop', 'volume', ...APPEARANCE_KEYS]
+            .some(key => old[key] !== cfg[key]);
+        if (liveChanged) {
+            for (const p of this._players)
+                p.applyLive(cfg);
+        }
+        this._updatePolicy();
     }
 }

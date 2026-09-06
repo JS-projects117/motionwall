@@ -76,7 +76,15 @@ motionwall quit-daemon
 Settings (all live, no restart of the wallpaper needed unless noted):
 scaling (fill / fit / stretch), monitors, playback speed, mute (restart), volume,
 hardware decoding method (restart), rendering quality (restart), the four
-power-saving rules, and start-at-login. Config lives in
+power-saving rules, and start-at-login.
+
+**Appearance** (live, the wallpaper changes as you drag): brightness, contrast,
+saturation, gamma, hue, zoom, horizontal / vertical position (which part of a
+cropped video stays in view - handy for portrait clips on a wide screen), and
+rotation in quarter turns. *Reset* puts everything back to the video as encoded.
+The values are stored in the config as integers from -100 to 100 (`rotate` in
+degrees) and map onto mpv's `brightness`, `contrast`, `saturation`, `gamma`,
+`hue`, `video-zoom`, `video-align-x/y` and `video-rotate` properties. Config lives in
 `~/.config/motionwall/config.json`; unknown keys are preserved, and
 `"mpv_args": [...]` passes extra options straight to mpv.
 
