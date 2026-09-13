@@ -13,7 +13,7 @@ Description: animated video wallpaper for GNOME
  in the desktop's own background layer, behind every window and the desktop
  icons; on Xorg a lightweight daemon does the same with desktop-layer windows.
  .
- Video is decoded on the GPU. Playback pauses automatically when the screen is
- locked, the user is idle, the machine is on battery or a full-screen
- application is in front. Ships a GTK4/libadwaita settings window, a command
+ Video uses GPU decoding when available. Playback can pause when the screen is
+ locked, the user is idle or full-screen applications cover the desktop.
+ The Xorg daemon also supports battery pausing. Ships a GTK4/libadwaita settings window, a command
  line interface and a D-Bus API.

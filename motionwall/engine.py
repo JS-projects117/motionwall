@@ -118,6 +118,7 @@ class MpvIpc:
     def connect(self, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            s = None
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.settimeout(2.0)
@@ -125,6 +126,8 @@ class MpvIpc:
                 self.sock = s
                 return True
             except OSError:
+                if s is not None:
+                    s.close()
                 time.sleep(0.05)
         return False
 

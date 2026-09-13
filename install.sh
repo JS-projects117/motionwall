@@ -40,6 +40,7 @@ fi
 log "installing to $APPDIR"
 rm -rf "$APPDIR"; mkdir -p "$APPDIR" "$BIN"
 cp -r "$HERE/motionwall" "$HERE/bin" "$HERE/scripts" "$HERE/data" "$HERE/extension" "$APPDIR/"
+cp "$HERE/LICENSE" "$HERE/CREDITS.md" "$HERE/README.md" "$APPDIR/"
 find "$APPDIR" -name __pycache__ -type d -prune -exec rm -rf {} +
 cat > "$LAUNCHER" <<EOL
 #!/bin/sh

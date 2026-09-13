@@ -1,189 +1,183 @@
 # Motionwall
 
-Animated **video wallpaper for Ubuntu / GNOME** that is designed around one goal:
-look great while costing almost nothing.
+Motionwall turns local videos into animated desktop wallpapers on Ubuntu and
+GNOME. It combines mpv playback with a GTK4/libadwaita settings app, a video
+library, appearance controls, and a command-line interface.
 
-* Plays any video file (MP4, MKV, WebM, MOV, GIF …) as the desktop background.
-* On **GNOME Wayland** (Ubuntu's default) a bundled GNOME Shell extension renders the
-  video in the desktop's own background layer (behind every window, non-clickable,
-  visible in the overview). On **X11/Xorg** a lightweight daemon does the same with
-  desktop-layer windows.
-* Hardware decoded on the GPU (NVDEC / Vulkan video / VA-API) — a 4K loop uses
-  ~3 % of one CPU core on an RTX-class card, ~0 % when paused.
-* Pauses automatically when nobody can see it: screen locked, user idle, on
-  battery, or (with the optional shell extension) a full-screen app is in front.
-* Clean GTK4 / libadwaita settings window, a CLI, D-Bus API, login autostart.
-* Coexists with Ubuntu's desktop icons.
+**Status: early preview (0.1.0).** Ready for experimentation and feedback;
+broader desktop and GPU testing is still needed before a stable release.
+No videos or wallpaper packs are included.
 
-## Install
+## Features
 
-### From the package (Ubuntu / Debian)
+- Play MP4, MKV, WebM, MOV, GIF, and other supported local video formats.
+- Use GPU decoding when supported by your hardware, drivers, and video codec.
+- Manage a video library with generated thumbnails and file-manager “Open With” support.
+- Adjust fill/fit/stretch, playback speed, sound, brightness, contrast, color,
+  zoom, positioning, and rotation.
+- Pause on lock, idle, or full-screen coverage; the Xorg daemon also supports
+  battery pausing.
+- On GNOME Wayland, render through a bundled Shell extension in the desktop
+  background layer, including the Activities overview.
+- On Xorg, render through a separate Python daemon with desktop-layer windows.
 
-Grab `motionwall_<version>_all.deb` from the releases page (or build it, see
-below) and install it like any other app - double-click it, or:
+## Compatibility and current limits
+
+The development setup previously documented for this project is Ubuntu 26.04,
+GNOME 50 on Wayland, and an NVIDIA RTX 5060 Ti. The extension declares GNOME
+45–50 compatibility, but that is not a tested compatibility matrix. Other
+GNOME versions, GPUs, mixed-DPI displays, and multi-monitor layouts need testing.
+
+| Area | Current behavior |
+| --- | --- |
+| GNOME Wayland | Requires the bundled extension and Xwayland. Log out and back in after first installation. |
+| Xorg | Uses the Python daemon; start it explicitly or enable daemon autostart. |
+| Other desktops | Not validated; the Wayland renderer depends on GNOME Shell. |
+| Battery pausing | Implemented by the Xorg daemon; currently absent from the Wayland extension. |
+| Monitor selection | The extension plays on all monitors; individual monitor selection is daemon-only. |
+| Advanced renderer settings | Custom `mpv_args`, rendering quality, decoder retry, and long-pause unloading belong to the daemon and are not all implemented by the extension. |
+| Renderer recovery | The daemon supervises mpv crashes; the extension may need “Reload Wallpaper” after a player exits. |
+
+The extension uses GNOME Shell internals, so Shell updates and other extensions
+can affect it. Performance depends on the backend, codec, resolution, GPU, and
+display scaling; no fixed CPU or memory usage is guaranteed.
+
+## Install from source
+
+Install the system dependencies on a compatible Ubuntu/Debian GNOME desktop:
 
 ```bash
-sudo apt install ./motionwall_0.1.0_all.deb
+sudo apt install git mpv python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-xlib ffmpeg zip xwayland
+git clone https://github.com/JS-projects117/motionwall.git
+cd motionwall
 ```
 
-Dependencies (mpv, GTK4, libadwaita, python3-xlib, ffmpeg) are pulled in by apt.
-Then open **Motionwall** from the app grid, pick a video, and log out and back in
-once: the first run enables the bundled GNOME Shell extension for your user, and
-GNOME on Wayland only loads extensions at login. After that everything is live.
-Remove it with `sudo apt remove motionwall` (your videos, library and settings in
-`~/.config/motionwall` stay).
-
-To build the package from a checkout you only need `dpkg-deb` (part of dpkg):
+For **GNOME Wayland**:
 
 ```bash
-scripts/build-deb.sh          # -> dist/motionwall_<version>_all.deb
+./install.sh --extension
 ```
 
-### From source, no root
+Log out and back in, open **Motionwall** from the app grid, and select a local
+video. The enabled extension starts with GNOME; daemon autostart is for Xorg.
+Ensure `~/.local/bin` is on your `PATH` to use the CLI.
+
+For **Xorg**:
 
 ```bash
-git clone <this repo> motionwall && cd motionwall
-sudo apt install mpv python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-xlib ffmpeg
-./install.sh --extension --autostart
+./install.sh --autostart
+motionwall daemon
 ```
 
-No root? `./install.sh --local-mpv` downloads mpv's .deb files with
-`apt-get download` and unpacks them into `~/.local/share/motionwall/runtime`
-(only the handful of libraries that are actually missing are fetched).
+The daemon command runs in the foreground for the current session. At the next
+login, the autostart entry starts it automatically.
 
-Flags: `--extension` installs the GNOME Shell extension (pause behind
-full-screen windows; needs a log-out/log-in on Wayland), `--autostart` restores
-the wallpaper at login. Everything is installed under `~/.local`; remove it with
-`./uninstall.sh` (`--purge` also deletes config and thumbnails).
+The application installs under `~/.local` without root. System dependencies
+still need to be available. `./install.sh --local-mpv` can fetch a private mpv
+runtime from apt packages; this fallback is experimental, especially on non-x86_64
+systems, and does not install the GTK dependencies.
+
+## Build and install a Debian package
+
+From the checkout, with Python 3 and `dpkg-deb` installed:
+
+```bash
+scripts/build-deb.sh
+sudo apt install ./dist/motionwall_0.1.0_all.deb
+```
+
+The package installs the application and extension system-wide, and apt installs
+the declared dependencies. On GNOME Wayland, open Motionwall once to enable the
+extension, then log out and back in. On Xorg, run `motionwall daemon` or enable
+start-at-login in the app.
+
+See [packaging notes](packaging/debian/README.md). Downloadable packages, when
+published, will appear on [GitHub Releases](https://github.com/JS-projects117/motionwall/releases).
 
 ## Use
 
-* Right-click any video in Files → **Open With → Motionwall**: it becomes the
-  wallpaper immediately (no window, just a notification).
-* Or open **Motionwall** from the app grid to manage a library of videos,
-  tweak scaling / power settings and watch the decoder stats.
-* Or from a terminal:
+Open **Motionwall** to choose a video, or right-click a video in Files and select
+**Open With → Motionwall**. You can also control it from a terminal:
 
-```
-motionwall set ~/Videos/loop.mp4   # use this file
-motionwall pause | resume | toggle
-motionwall stop                    # back to the normal wallpaper (video remembered)
-motionwall resume                  # bring it back
-motionwall status [--json]         # what is happening, decoder, fps, drops
-motionwall quit-daemon
+```bash
+motionwall set ~/Videos/loop.mp4
+motionwall pause
+motionwall resume
+motionwall toggle
+motionwall stop
+motionwall status --json
 ```
 
-Settings (all live, no restart of the wallpaper needed unless noted):
-scaling (fill / fit / stretch), monitors, playback speed, mute (restart), volume,
-hardware decoding method (restart), rendering quality (restart), the four
-power-saving rules, and start-at-login.
+`stop` restores the static desktop while remembering the chosen video; `resume`
+enables playback again. `motionwall quit-daemon` stops the Xorg service.
+The GUI's **Reload Wallpaper** action restarts the extension's players.
 
-**Appearance** (live, the wallpaper changes as you drag): brightness, contrast,
-saturation, gamma, hue, zoom, horizontal / vertical position (which part of a
-cropped video stays in view - handy for portrait clips on a wide screen), and
-rotation in quarter turns. *Reset* puts everything back to the video as encoded.
-The values are stored in the config as integers from -100 to 100 (`rotate` in
-degrees) and map onto mpv's `brightness`, `contrast`, `saturation`, `gamma`,
-`hue`, `video-zoom`, `video-align-x/y` and `video-rotate` properties. Config lives in
-`~/.config/motionwall/config.json`; unknown keys are preserved, and
-`"mpv_args": [...]` passes extra options straight to mpv.
-
-## How it works
-
-```
- GTK4 UI  ──D-Bus──▶  motionwall daemon  ──X11 (Xwayland)──▶  desktop-layer windows
-   CLI    ──D-Bus──▶   (GLib main loop)   ──JSON IPC──────▶   mpv per monitor (--wid)
-                        ▲       ▲   ▲
-        ScreenSaver ────┘       │   └──── org.motionwall.Shell (optional extension)
-        IdleMonitor ────────────┘         UPower.OnBattery
-```
-
-* **Desktop layer.** The daemon creates one X11 window per monitor with
-  `_NET_WM_WINDOW_TYPE_DESKTOP`, `_NET_WM_STATE_BELOW/STICKY`, on all
-  workspaces, unfocusable. Mutter (GNOME's compositor) honours this for X
-  clients even in a Wayland session, so the window sits under every other
-  window on every workspace. Ubuntu's desktop icons live in the same layer and
-  keep lowering themselves; Motionwall re-lowers its windows whenever the
-  active window / workspace / client list changes so the icons stay visible.
-* **Rendering.** [mpv](https://mpv.io) draws into that window (`--wid`) with
-  `--hwdec=auto-safe`: decoding happens on the GPU (NVDEC, Vulkan video or
-  VA-API) and frames never touch system memory. The audio track is not decoded
-  at all when muted. `--profile=fast` uses cheap bilinear scaling and no
-  dithering (switch to *High quality scaling* if you prefer). No OSD, no input
-  handling, and mpv is told **not** to inhibit the screensaver.
-* **Pause policy.** `policy.py` is a pure function of
-  `(user play, locked, idle, on battery, occluded)` and the config. Lock state
-  comes from `org.gnome.ScreenSaver`, idleness from
-  `org.gnome.Mutter.IdleMonitor`, battery from UPower, occlusion from the
-  extension. A paused mpv drops to ~0 % CPU and the GPU decoder goes idle.
-  For the long pauses (idle, lock) the file is *released* instead: mpv stays
-  attached to the window but unloads the decoder and its GPU frame pool, and
-  reloads the video (about a second) when you come back.
-* **Supervision.** If mpv dies it is restarted with exponential backoff
-  (1, 2, 4, 8, 16 s, then give up and report *error*). Monitor hot-plug or
-  resolution changes (RandR) rebuild the windows.
-* **Processes.** One tiny daemon (0 % CPU when idle) plus one mpv per monitor.
-  The GUI is a separate process you can close.
-
-### Measured on the development machine
-
-Ubuntu 26.04, GNOME 50 Wayland, RTX 5060 Ti, 4K monitor at 125 % scaling:
-
-| state                    | decoder | mpv CPU (one core) | RSS    | VRAM    | dropped |
-|--------------------------|---------|--------------------|--------|---------|---------|
-| 1080p30 H.264 playing    | vulkan  | 3.2 %              | 357 MB |         | 0       |
-| 2160p30 H.264 playing    | vulkan  | 2.8–3.2 %          | 368 MB | 287 MiB | 0       |
-| paused (user)            | —       | 0.2–0.3 %          | 368 MB | 287 MiB |         |
-| released (idle / locked) | —       | 0.3 %              | 358 MB | 219 MiB |         |
-| daemon                   | —       | 0.0 %              | 16 MB  |         |         |
-
-RSS is dominated by the Vulkan driver and libplacebo shader cache, not by
-video buffers; releasing the file frees the decoder's GPU frame pool.
-
-(The OpenGL backend with NVDEC measured 5.6 % / 456 MB; Vulkan is the default.)
-
-If the GPU is out of memory when the video starts (e.g. a large local LLM is
-loaded), mpv falls back to software decoding (~9 % CPU, 1 GB RSS at 4K). The
-daemon notices `hwdec-current == no` and re-tries hardware decoding every
-minute, up to five times; `motionwall status` flags the software path.
+Settings and the library live in `~/.config/motionwall`; thumbnails and logs live
+in `~/.cache/motionwall` (or their XDG equivalents). Original videos stay at their
+selected paths, so moving or deleting a video requires selecting it again.
 
 ## Troubleshooting
 
-* **`motionwall status` says mpv NOT FOUND** — `sudo apt install mpv` or
-  `./install.sh --local-mpv`.
-* **Software decoding (`decode=software`)** — install the driver for your GPU:
-  Intel `intel-media-va-driver-non-free`, AMD `mesa-va-drivers`, NVIDIA
-  `libnvidia-decode-*` (comes with the driver). Try *Hardware decoding →
-  Vulkan* or *NVDEC* explicitly. mpv's log is in `~/.cache/motionwall/`.
-* **Nothing shows on Wayland** — GNOME needs Xwayland (installed by default;
-  `DISPLAY` must be set in the session). Other Wayland compositors without
-  X11 desktop-window support are not supported; on wlroots compositors use
-  `mpvpaper` instead.
-* **Fractional scaling** — with GNOME's `xwayland-native-scaling` the X screen
-  is larger than the physical one (e.g. 6144×3456 for a 4K display at 125 %),
-  so mpv renders at that size. On discrete GPUs this is negligible; on an
-  integrated GPU keep *Rendering: Efficient*.
-* **Desktop icons hidden** — make sure only one Motionwall daemon runs
-  (`motionwall quit-daemon`, then `motionwall resume`).
-* **Extension not detected** — after `install.sh --extension`, log out and in
-  (GNOME on Wayland only loads new extensions at login), then check
-  `gnome-extensions info motionwall@motionwall`.
-* **Overview / workspace switcher shows the static wallpaper** — expected;
-  GNOME renders its own background in those views.
-* **Stutter from a network or removable drive** — the demuxer read-ahead is
-  kept tiny for local files; add `"mpv_args": ["--cache=yes"]` to the config.
+- **No wallpaper on Wayland:** check `gnome-extensions info motionwall@motionwall`,
+  confirm Xwayland and mpv are installed, and log out and back in after enabling
+  the extension.
+- **No wallpaper on Xorg:** run `motionwall daemon` in a terminal and inspect its
+  output, then check `motionwall status` in another terminal.
+- **Static wallpaper in the overview:** expected for the standalone Xorg daemon;
+  with the extension, check that it loaded successfully.
+- **High CPU usage:** decoding may have fallen back to software. Check that your
+  GPU driver and mpv support the selected codec; try a smaller video or a
+  different hardware decoding setting.
+- **Wallpaper stopped after a renderer failure:** use **Reload Wallpaper**, or
+  disable and re-enable the extension.
+
+Report problems in [GitHub Issues](https://github.com/JS-projects117/motionwall/issues)
+with your OS, GNOME version, session type (Wayland/Xorg), GPU, mpv version, and
+steps to reproduce. Include relevant logs after reviewing them for local paths.
+
+## Uninstall
+
+For a source installation:
+
+```bash
+./uninstall.sh          # keeps settings and library
+./uninstall.sh --purge  # also removes Motionwall settings and caches
+```
+
+For a package installation:
+
+```bash
+sudo apt remove motionwall
+```
+
+Original video files are not deleted by these commands.
 
 ## Development
 
-```
-python3 -m unittest discover -s tests -v   # unit tests (no display needed)
-python3 -m motionwall.xdesktop 10          # show a black desktop window for 10 s
-MOTIONWALL_LOG=DEBUG bin/motionwall daemon # run the daemon in the foreground
+```bash
+python3 -m unittest discover -s tests -v
+scripts/build-deb.sh
 ```
 
-Layout: `motionwall/xdesktop.py` (X11 windows), `engine.py` (mpv + IPC),
-`policy.py` / `power.py` (pausing), `daemon.py` (D-Bus service), `client.py`,
-`cli.py`, `ui/app.py` (GTK4), `library.py` (videos + thumbnails),
-`extension/` (GNOME Shell extension), `scripts/`, `install.sh`, `uninstall.sh`.
+The Python tests run without a display. They do not validate GNOME Shell
+integration. Before a stable release, test a fresh install/uninstall, first-login
+enabling, lock/unlock, idle/full-screen pause and resume, monitor changes,
+fractional scaling, and coexistence with desktop icons on each supported setup.
 
-License: MIT.
+Source layout: `motionwall/` contains the Python application and daemon;
+`extension/` contains the GNOME renderer; `scripts/`, `data/`, and `packaging/`
+provide installation and desktop integration.
+
+## Credits and licensing
+
+The GNOME extension's background-rendering and window-management approach is
+adapted from [Hanabi](https://github.com/jeffshee/gnome-ext-hanabi) by Jeff Shee
+and contributors, and [Desktop Icons NG (DING)](https://gitlab.com/rastersoft/desktop-icons-ng)
+by Sergio Costas and contributors, including Sundeep Mediratta's Shell override
+work. Thank you to those projects for making their work available.
+
+See [CREDITS.md](CREDITS.md) for source references and dependency acknowledgments.
+The original application code is [MIT-licensed](LICENSE). The bundled extension
+is distributed under [GPL version 3](extension/COPYING), with its attribution and
+modification notice in [extension/NOTICE](extension/NOTICE). AppStream metadata
+is marked CC0-1.0. External dependencies retain their own licenses.

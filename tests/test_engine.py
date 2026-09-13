@@ -72,7 +72,8 @@ class FakeMpvServer:
         self.thread.start()
 
     def _serve(self):
-        conn, _ = self.srv.accept()
+        with self.srv:
+            conn, _ = self.srv.accept()
         conn.sendall(b'{"event":"file-loaded"}\n')  # unsolicited event must be ignored
         buf = b""
         while True:
@@ -111,8 +112,16 @@ class IpcTests(unittest.TestCase):
             ipc.close()
 
     def test_connect_times_out_without_server(self):
+        import gc
+        import warnings
+
         ipc = engine.MpvIpc("/nonexistent/mpv.sock")
-        self.assertFalse(ipc.connect(timeout=0.2))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            self.assertFalse(ipc.connect(timeout=0.2))
+            gc.collect()
+        self.assertIsNone(ipc.sock)
+        self.assertFalse([w for w in caught if issubclass(w.category, ResourceWarning)])
 
 
 class SupervisionTests(unittest.TestCase):

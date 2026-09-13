@@ -1,4 +1,9 @@
 // Motionwall - animated video wallpaper rendered inside GNOME Shell.
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Joseph Sanchez (Motionwall modifications).
+// Adapted work: Jeff Shee and contributors (Hanabi), Sergio Costas and
+// Sundeep Mediratta (DING). See NOTICE for upstream copyright notices,
+// source references, and modification details; see COPYING for the license.
 //
 // Strategy (adapted from the DING and Hanabi extensions):
 //   * one hidden mpv window per monitor renders the video on Xwayland;

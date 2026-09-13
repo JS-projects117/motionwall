@@ -1,0 +1,44 @@
+Motionwall GNOME Shell extension
+
+SPDX-License-Identifier: GPL-3.0-only
+Motionwall modifications Copyright (c) 2026 Joseph Sanchez
+
+The background actor cloning and Shell window filtering/override approach is
+adapted from Hanabi and Desktop Icons NG (DING), as acknowledged in the original
+Motionwall extension source. Related source references:
+
+Hanabi — Jeff Shee and contributors
+Copyright (C) 2026 Jeff Shee <jeffshee8969@gmail.com> and contributors
+https://github.com/jeffshee/gnome-ext-hanabi
+https://github.com/jeffshee/gnome-ext-hanabi/blob/09da6255ffc3ade4c0aede9307ffa721a27ffa67/src/wallpaper.ts
+https://github.com/jeffshee/gnome-ext-hanabi/blob/09da6255ffc3ade4c0aede9307ffa721a27ffa67/src/gnomeShellOverride.ts
+Hanabi's referenced source is licensed GPL-3.0-or-later.
+
+Desktop Icons NG (DING) — Sergio Costas and contributors
+Shell override notices:
+Copyright (C) 2021 Sundeep Mediratta (smedius@gmail.com)
+Copyright (C) 2020 Sergio Costas (rastersoft@gmail.com)
+https://gitlab.com/rastersoft/desktop-icons-ng
+https://gitlab.com/rastersoft/desktop-icons-ng/-/blob/master/gnomeShellOverride.js
+DING's referenced Shell override code is licensed under GPL version 3.
+
+These references identify related upstream implementations reviewed on
+2026-09-13; the original adaptation commit did not record upstream revisions.
+They are not claims that those exact revisions were originally copied.
+
+Motionwall's adaptation replaces the renderer with mpv per monitor, reads a
+shared JSON configuration, adds mpv IPC control and click-through X11 window
+preparation, and integrates its own pause policy, redraw and cleanup behavior.
+This notice was added on 2026-09-13. Motionwall is a separate project; upstream
+authors do not endorse or maintain these modifications.
+
+This extension is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, version 3 of the License.
+
+This extension is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this extension in COPYING. If not, see https://www.gnu.org/licenses/.

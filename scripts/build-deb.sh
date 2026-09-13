@@ -37,8 +37,10 @@ cp "$HERE/data/org.motionwall.Motionwall.metainfo.xml" "$PKG/usr/share/metainfo/
 
 # GNOME Shell extension (system-wide; enabled per user on first run of the app)
 cp "$HERE/extension/metadata.json" "$HERE"/extension/*.js "$PKG/usr/share/gnome-shell/extensions/$UUID/"
+cp "$HERE/extension/COPYING" "$HERE/extension/NOTICE" "$PKG/usr/share/gnome-shell/extensions/$UUID/"
 
 # docs
+cp "$HERE/LICENSE" "$HERE/CREDITS.md" "$HERE/README.md" "$PKG/usr/share/doc/motionwall/"
 if [ -f "$HERE/LICENSE" ]; then
   LICENSE_TEXT="$(sed 's/^/ /' "$HERE/LICENSE")"
   LICENSE_NAME="see below"
@@ -57,6 +59,20 @@ Files: *
 Copyright: $(date +%Y) $NAME
 License: $LICENSE_NAME
 $LICENSE_TEXT
+
+Files: /usr/share/gnome-shell/extensions/$UUID/*
+Copyright: 2026 Joseph Sanchez (Motionwall modifications)
+ 2026 Jeff Shee and contributors (Hanabi)
+ 2021 Sundeep Mediratta (DING)
+ 2020 Sergio Costas (DING)
+License: GPL-3
+ See /usr/share/gnome-shell/extensions/$UUID/COPYING for the full license
+ and NOTICE in the same directory for attribution and modification details.
+
+Files: /usr/share/metainfo/org.motionwall.Motionwall.metainfo.xml
+Copyright: 2026 Joseph Sanchez
+License: CC0-1.0
+ https://creativecommons.org/publicdomain/zero/1.0/
 EOL
 {
   echo "motionwall ($VERSION) unstable; urgency=medium"; echo

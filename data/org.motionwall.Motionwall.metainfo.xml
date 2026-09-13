@@ -4,6 +4,9 @@
   <name>Motionwall</name>
   <summary>Use a video as your desktop wallpaper</summary>
   <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT AND GPL-3.0-only</project_license>
+  <url type="homepage">https://github.com/JS-projects117/motionwall</url>
+  <url type="bugtracker">https://github.com/JS-projects117/motionwall/issues</url>
   <developer id="org.motionwall">
     <name>Joseph Sanchez</name>
   </developer>
@@ -16,9 +19,9 @@
       desktop-layer windows.
     </p>
     <p>
-      Video is decoded on the GPU, and playback pauses automatically whenever
-      nobody would see it: screen locked, user idle, on battery, or a full-screen
-      application in front. A settings window manages a library of videos,
+      Video uses GPU decoding when available. Playback can pause when the screen
+      is locked, the user is idle, or full-screen applications cover the desktop.
+      The Xorg daemon also supports battery pausing. A settings window manages a library of videos,
       scaling, speed, sound and the power-saving rules; a command line and D-Bus
       API are included.
     </p>

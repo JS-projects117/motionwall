@@ -552,11 +552,18 @@ class MotionwallApp(Adw.Application):
 
     def _about(self, *_):
         about = Adw.AboutDialog(application_name="Motionwall", application_icon=APP_ID, version=__version__,
-                                developer_name="Motionwall", license_type=Gtk.License.MIT_X11,
+                                developer_name="Motionwall", license_type=Gtk.License.CUSTOM,
+                                license="Application: MIT. Bundled GNOME Shell extension: GPL version 3. "
+                                        "See the repository LICENSE and extension/COPYING for full terms.",
                                 comments="Efficient animated video wallpaper for Ubuntu and GNOME.\n"
                                          "Hardware-decoded by mpv, drawn in the desktop layer, "
                                          "paused whenever nobody is looking.",
-                                website="https://github.com/")
+                                website="https://github.com/JS-projects117/motionwall")
+        about.add_credit_section("Extension references", [
+            "Hanabi — Jeff Shee and contributors https://github.com/jeffshee/gnome-ext-hanabi",
+            "Desktop Icons NG — Sergio Costas, Sundeep Mediratta and contributors "
+            "https://gitlab.com/rastersoft/desktop-icons-ng",
+        ])
         about.present(self.window)
 
     def _quit_daemon(self, *_):
